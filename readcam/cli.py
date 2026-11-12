@@ -8,48 +8,88 @@ from .config import DEFAULT_CAMERA_INDEX, DEFAULT_OCR_INTERVAL, DEFAULT_FRAME_IN
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser."""
+    """Build the argument parser with subcommands."""
     parser = argparse.ArgumentParser(
         prog="readcam",
         description="Live camera scanner: detect QR codes, barcodes, and text in real time.",
     )
-    parser.add_argument(
-        "--list-cameras", "-l",
-        action="store_true",
-        help="List available camera devices and exit.",
+    sub = parser.add_subparsers(dest="command", metavar="")
+
+    # --- scan (default) ---
+    scan = sub.add_parser(
+        "scan", aliases=["run"],
+        help="Start scanning with a camera (default command).",
     )
-    parser.add_argument(
+    scan.add_argument(
         "--camera", "-c",
         type=int,
         default=DEFAULT_CAMERA_INDEX,
         help=f"Camera index (default: {DEFAULT_CAMERA_INDEX}).",
     )
-    parser.add_argument(
+    scan.add_argument(
         "--ocr-interval",
         type=int,
         default=DEFAULT_OCR_INTERVAL,
         help=f"OCR processing interval in ms (default: {DEFAULT_OCR_INTERVAL}).",
     )
-    parser.add_argument(
+    scan.add_argument(
         "--frame-interval",
         type=int,
         default=DEFAULT_FRAME_INTERVAL,
         help=f"Frame capture interval in ms (default: {DEFAULT_FRAME_INTERVAL}).",
     )
-    parser.add_argument(
+    scan.add_argument(
         "--debug",
         action="store_true",
         help="Enable verbose debug logging.",
     )
+
+    # --- list-cameras ---
+    sub.add_parser(
+        "list-cameras", aliases=["ls"],
+        help="List available camera devices and exit.",
+    )
+
+    # --- install-zbar ---
+    sub.add_parser(
+        "install-zbar",
+        help="Download and install zbar system DLL for QR/barcode decoding.",
+    )
+
+    # --- install-tesseract ---
+    sub.add_parser(
+        "install-tesseract",
+        help="Show Tesseract installation instructions for OCR.",
+    )
+
     return parser
 
 
 def entry_point() -> int:
     """Application entry point. Returns exit code."""
     parser = build_parser()
-    args = parser.parse_args()
+    args, extra = parser.parse_known_args()
 
-    if args.list_cameras:
+    command = args.command
+
+    # Default: if no subcommand given and no --list-cameras, treat as "scan"
+    if command is None:
+        # Check for legacy --list-cameras / -l flag
+        if "-l" in extra or "--list-cameras" in extra:
+            cameras = CameraDiscovery.list_cameras()
+            if not cameras:
+                print("No cameras detected.")
+                return 1
+            print("Available cameras:")
+            for cam in cameras:
+                print(f"  [{cam.index}] {cam.name}")
+            return 0
+
+        # Re-parse as "scan"
+        args = parser.parse_args(["scan"] + extra)
+        command = "scan"
+
+    if command == "list-cameras" or command == "ls":
         cameras = CameraDiscovery.list_cameras()
         if not cameras:
             print("No cameras detected.")
@@ -59,7 +99,15 @@ def entry_point() -> int:
             print(f"  [{cam.index}] {cam.name}")
         return 0
 
-    # Import and launch UI
+    if command == "install-zbar":
+        from .install import cmd_install_zbar
+        return cmd_install_zbar()
+
+    if command == "install-tesseract":
+        from .install import cmd_install_tesseract
+        return cmd_install_tesseract()
+
+    # "scan" / "run" -- launch the UI
     try:
         from .ui.app import ReadCamApp
         app = ReadCamApp(
