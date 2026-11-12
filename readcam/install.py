@@ -22,6 +22,64 @@ _REPO = "mchehab/zbar"
 _GITHUB_API = f"https://api.github.com/repos/{_REPO}/releases/latest"
 _WIN_ASSET = "zbar-win_x86_64-DShow.zip"
 
+# Common Tesseract install locations on Windows (checked in order)
+_TESSERACT_CANDIDATES = [
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    Path.home() / "AppData" / "Local" / "Programs" / "Tesseract-OCR" / "tesseract.exe",
+    Path.home() / "AppData" / "Local" / "Tesseract-OCR" / "tesseract.exe",
+]
+
+
+def find_tesseract() -> str:
+    """Locate a Tesseract executable.
+
+    Checks PATH first, then common Windows install locations.
+    Returns the executable path, or an empty string if not found.
+    """
+    # Already on PATH?
+    which = shutil.which("tesseract")
+    if which:
+        return which
+
+    # Probe known install locations
+    for candidate in _TESSERACT_CANDIDATES:
+        path = Path(candidate)
+        if path.is_file():
+            return str(path)
+
+    return ""
+
+
+def configure_tesseract() -> bool:
+    """Point pytesseract at a discovered Tesseract executable.
+
+    Returns True if Tesseract is available (either via PATH or a
+    discovered install location).
+    """
+    try:
+        import pytesseract
+    except ImportError:
+        return False
+
+    # Already usable via PATH?
+    try:
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        pass
+
+    exe = find_tesseract()
+    if exe:
+        pytesseract.pytesseract.tesseract_cmd = exe
+        try:
+            pytesseract.get_tesseract_version()
+            return True
+        except Exception:
+            return False
+
+    return False
+
 
 def _pyzbar_dir() -> Path:
     """Return the pyzbar package directory, or None if not installed."""
@@ -195,13 +253,22 @@ def cmd_install_tesseract() -> int:
 
     Tesseract cannot be auto-installed -- we can only offer guidance.
     """
+    if configure_tesseract():
+        try:
+            import pytesseract
+            version = pytesseract.get_tesseract_version()
+            sys.stdout.write(
+                f"Tesseract is available (version {version}).\n",
+            )
+            return 0
+        except Exception:
+            pass
+
     try:
         import pytesseract  # noqa: F401
-        pytesseract.get_tesseract_version()
-        sys.stdout.write("Tesseract is already available.\n")
-        return 0
-    except (ImportError, OSError):
-        pass
+    except ImportError:
+        sys.stdout.write("pytesseract is not installed. Run: pip install pytesseract\n")
+        return 1
 
     sys.stdout.write(
         "Tesseract OCR is not available.\n\n"

@@ -1,18 +1,18 @@
 """OCR text decoder using Tesseract."""
 
-import cv2
 import numpy as np
 
-from .base import Decoder, Detection
+from .base import Detection, Decoder
 from ..config import TEXT_MIN_CONFIDENCE, TEXT_MIN_LENGTH
-from ..detector import find_text_regions
+from ..install import configure_tesseract
 
 
 class OCRDecoder(Decoder):
-    """Decodes text regions in a frame using Tesseract OCR.
+    """Decodes text in a frame using Tesseract OCR.
 
-    Slower than zbar -- designed to run on a background thread
-    at a lower frequency (e.g. every 1-2 seconds).
+    Runs word-level OCR over the whole frame (sparse-text mode),
+    then groups words into lines. Slower than zbar -- designed to
+    run on a background thread at a lower frequency (e.g. 1-2 s).
     """
 
     def __init__(
@@ -30,17 +30,28 @@ class OCRDecoder(Decoder):
     def _check_available() -> bool:
         try:
             import pytesseract
+        except ImportError:
+            return False
+
+        # Try PATH first; fall back to discovered install locations
+        try:
             pytesseract.get_tesseract_version()
             return True
-        except (ImportError, OSError, EnvironmentError):
+        except Exception:
+            pass
+
+        try:
+            from ..install import configure_tesseract
+            return configure_tesseract()
+        except Exception:
             return False
 
     @property
     def available(self) -> bool:
         return self._available
 
-    def decode_frame(self, frame: np.ndarray) -> list[Detection]:
-        """Find text regions in *frame* and decode each with Tesseract.
+    def decode(self, frame: np.ndarray) -> list[Detection]:
+        """Run OCR over *frame*, returning line-grouped text detections.
 
         Returns a list of Detection objects (may be empty).
         """
@@ -49,58 +60,78 @@ class OCRDecoder(Decoder):
 
         import pytesseract
 
-        regions = find_text_regions(frame)
-        results = []
+        try:
+            gray = _to_gray(frame)
+            data = pytesseract.image_to_data(
+                gray,
+                output_type=pytesseract.Output.DICT,
+                config="--psm 11 --oem 3",
+            )
+        except Exception as exc:
+            if self.debug:
+                import logging
+                logging.debug("OCR error: %s", exc)
+            return []
 
-        for (x, y, w, h) in regions:
-            # Extract region of interest with a small padding
-            pad = 4
-            x1 = max(0, x - pad)
-            y1 = max(0, y - pad)
-            x2 = min(frame.shape[1], x + w + pad)
-            y2 = min(frame.shape[0], y + h + pad)
-            roi = frame[y1:y2, x1:x2]
+        # Group words into lines keyed by (block, par, line)
+        lines: dict[tuple, dict] = {}
+        texts = data.get("text", [])
+        confs = data.get("conf", [])
+        blocks = data.get("block_num", [])
+        paras = data.get("par_num", [])
+        line_nums = data.get("line_num", [])
+        lefts = data.get("left", [])
+        tops = data.get("top", [])
+        widths = data.get("width", [])
+        heights = data.get("height", [])
 
-            if roi.size == 0:
-                continue
-
+        for i, word in enumerate(texts):
+            word = str(word).strip()
             try:
-                data = pytesseract.image_to_data(
-                    roi,
-                    output_type=pytesseract.Output.DICT,
-                    config="--psm 6 --oem 3",
-                )
+                conf = int(float(confs[i]))
+            except (ValueError, TypeError):
+                conf = -1
 
-                text_parts: list[str] = []
-                confidences: list[int] = []
-
-                for i, text in enumerate(data.get("text", [])):
-                    conf = int(data.get("conf", [0])[i])
-                    text = text.strip()
-                    if text and conf > self.min_confidence:
-                        text_parts.append(text)
-                        confidences.append(conf)
-
-                if not text_parts:
-                    continue
-
-                full_text = " ".join(text_parts)
-                if len(full_text) < self.min_length:
-                    continue
-
-                avg_confidence = sum(confidences) / len(confidences) / 100.0
-
-                results.append(Detection(
-                    type="TXT",
-                    value=full_text,
-                    confidence=avg_confidence,
-                    bbox=(x, y, w, h),
-                ))
-
-            except Exception as exc:
-                if self.debug:
-                    import logging
-                    logging.debug("OCR error at %s: %s", (x, y, w, h), exc)
+            if not word or conf < self.min_confidence:
                 continue
+
+            key = (blocks[i], paras[i], line_nums[i])
+            entry = lines.setdefault(key, {"words": [], "conf": [], "box": None})
+
+            entry["words"].append(word)
+            entry["conf"].append(conf)
+
+            x, y, w, h = lefts[i], tops[i], widths[i], heights[i]
+            if entry["box"] is None:
+                entry["box"] = (x, y, w, h)
+            else:
+                bx, by, bw, bh = entry["box"]
+                nx = min(bx, x)
+                ny = min(by, y)
+                nw = max(bx + bw, x + w) - nx
+                nh = max(by + bh, y + h) - ny
+                entry["box"] = (nx, ny, nw, nh)
+
+        results: list[Detection] = []
+        for entry in lines.values():
+            text = " ".join(entry["words"])
+            if len(text) < self.min_length:
+                continue
+
+            avg_conf = sum(entry["conf"]) / len(entry["conf"]) / 100.0
+            results.append(Detection(
+                type="TXT",
+                value=text,
+                confidence=avg_conf,
+                bbox=entry["box"],
+            ))
 
         return results
+
+
+def _to_gray(frame: np.ndarray) -> np.ndarray:
+    """Convert a BGR (or already-grayscale) frame to grayscale."""
+    import cv2
+    if frame.ndim == 2:
+        return frame
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)

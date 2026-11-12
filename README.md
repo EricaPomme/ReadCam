@@ -28,6 +28,12 @@ These must be installed separately -- they are **not** pip-installable:
 Tesseract is optional (required only for OCR / text detection).  
 The app will work with just OpenCV if neither is installed -- it just won't detect anything.
 
+Both libraries are auto-discovered at startup. If Tesseract isn't on `PATH`,
+common install locations (including the winget/UB-Mannheim default under
+`%LOCALAPPDATA%\Programs\Tesseract-OCR`) are probed automatically. If zbar's
+bundled DLL fails to load, run `readcam install-zbar` to fetch a compatible
+build from the latest zbar release.
+
 ### Python dependencies
 
 ```bash
