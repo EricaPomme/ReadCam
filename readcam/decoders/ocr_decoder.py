@@ -4,8 +4,36 @@ import cv2
 import numpy as np
 
 from .base import Detection, Decoder
-from ..config import OCR_MAX_WIDTH, TEXT_MIN_CONFIDENCE, TEXT_MIN_LENGTH
+from ..config import (
+    OCR_MAX_WIDTH,
+    TEXT_MIN_ALNUM_RATIO,
+    TEXT_MIN_CONFIDENCE,
+    TEXT_MIN_LETTERS,
+    TEXT_MIN_LENGTH,
+)
 from ..install import configure_tesseract
+
+
+def looks_like_text(value: str) -> bool:
+    """Heuristic filter to reject OCR pareidolia (text in noise).
+
+    Requires the string to be long enough, mostly alphanumeric,
+    and to contain a minimum number of letters. Junk like 'ae',
+    'i>.', 'ik', or symbols-only strings fail.
+    """
+    value = value.strip()
+    if len(value) < TEXT_MIN_LENGTH:
+        return False
+
+    alnum = sum(1 for c in value if c.isalnum())
+    if alnum / len(value) < TEXT_MIN_ALNUM_RATIO:
+        return False
+
+    letters = sum(1 for c in value if c.isalpha())
+    if letters < TEXT_MIN_LETTERS:
+        return False
+
+    return True
 
 
 class OCRDecoder(Decoder):
@@ -129,6 +157,8 @@ class OCRDecoder(Decoder):
         for entry in lines.values():
             text = " ".join(entry["words"])
             if len(text) < self.min_length:
+                continue
+            if not looks_like_text(text):
                 continue
 
             avg_conf = sum(entry["conf"]) / len(entry["conf"]) / 100.0

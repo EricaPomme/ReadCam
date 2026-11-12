@@ -20,9 +20,11 @@ CONTOUR_MAX_ASPECT_RATIO = 10.0
 CONFIDENCE_MAX = 100
 CONFIDENCE_DECAY_DELAY = 5.0    # seconds before confidence starts decaying
 CONFIDENCE_REMOVE_DELAY = 30.0  # seconds before removal from list
-TEXT_MIN_CONFIDENCE = 30        # min Tesseract confidence for text results
-TEXT_MIN_LENGTH = 2             # min characters for text results
-TEXT_REQUIRED_HITS = 2          # text must be seen N times before appearing
+TEXT_MIN_CONFIDENCE = 60        # min Tesseract confidence for text results
+TEXT_MIN_LENGTH = 4             # min characters for text results
+TEXT_REQUIRED_HITS = 3          # text must be seen N times before appearing
+TEXT_MIN_ALNUM_RATIO = 0.6      # fraction of chars that must be alphanumeric
+TEXT_MIN_LETTERS = 3            # min alphabetic characters in a result
 
 # OCR performance
 OCR_MAX_WIDTH = 1000            # downscale frames wider than this before OCR
