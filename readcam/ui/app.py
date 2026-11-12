@@ -27,6 +27,8 @@ from .preview import PreviewPanel
 from .results_panel import ResultsPanel
 from .theme import FONTS, setup_theme
 
+logger = logging.getLogger(__name__)
+
 
 class ReadCamApp(ctk.CTk):
     """Main ReadCam application window."""
@@ -60,6 +62,8 @@ class ReadCamApp(ctk.CTk):
         self.frame_queue: queue.Queue = queue.Queue(maxsize=2)
         self.ocr_queue: queue.Queue = queue.Queue(maxsize=2)
         self.ocr_result_queue: queue.Queue = queue.Queue()
+        # Shared, mutable OCR interval (ms) -- OCR thread raises it adaptively
+        self.ocr_interval_holder = {"ms": ocr_interval_ms}
 
         # Thread control
         self.pause_event = threading.Event()
@@ -111,6 +115,7 @@ class ReadCamApp(ctk.CTk):
             stop_event=self.stop_event,
             frame_interval_ms=frame_interval_ms,
             ocr_interval_ms=ocr_interval_ms,
+            ocr_interval_holder=self.ocr_interval_holder,
             debug=debug,
         )
         self.capture_thread.start()
@@ -120,6 +125,7 @@ class ReadCamApp(ctk.CTk):
             result_queue=self.ocr_result_queue,
             stop_event=self.stop_event,
             pause_event=self.pause_event,
+            ocr_interval_holder=self.ocr_interval_holder,
             debug=debug,
         )
         self.ocr_thread.start()
@@ -128,6 +134,8 @@ class ReadCamApp(ctk.CTk):
         self._ui_fps = 0.0
         self._frame_count = 0
         self._fps_timer = time.time()
+        self._last_decay_time = 0.0
+        self._last_results_version = -1
         self.after(50, self._update_loop)
 
         # --- Clean shutdown ---
@@ -168,8 +176,11 @@ class ReadCamApp(ctk.CTk):
             for zr in self._latest_zbar:
                 self.results_manager.add_or_update(zr.type, zr.data, zr.rect)
 
-            # 4. Decay stale results
-            self.results_manager.decay()
+            # 4. Decay stale results (once per second is plenty)
+            now = time.time()
+            if now - self._last_decay_time >= 1.0:
+                self._last_decay_time = now
+                self.results_manager.decay()
 
             # 5. Redraw preview
             self.preview_panel.update(
@@ -178,10 +189,13 @@ class ReadCamApp(ctk.CTk):
                 self.results_manager.get_active(),
             )
 
-            # 6. Refresh results list
-            self.results_panel.update_results(
-                self.results_manager.get_sorted(),
-            )
+            # 6. Refresh results list only when something changed
+            version = self.results_manager.version
+            if version != self._last_results_version:
+                self._last_results_version = version
+                self.results_panel.update_results(
+                    self.results_manager.get_sorted(),
+                )
 
             # 7. Track FPS for status display
             self._frame_count += 1

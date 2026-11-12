@@ -1,9 +1,10 @@
 """OCR text decoder using Tesseract."""
 
+import cv2
 import numpy as np
 
 from .base import Detection, Decoder
-from ..config import TEXT_MIN_CONFIDENCE, TEXT_MIN_LENGTH
+from ..config import OCR_MAX_WIDTH, TEXT_MIN_CONFIDENCE, TEXT_MIN_LENGTH
 from ..install import configure_tesseract
 
 
@@ -62,6 +63,18 @@ class OCRDecoder(Decoder):
 
         try:
             gray = _to_gray(frame)
+
+            # Downscale large frames -- OCR cost scales with pixel count.
+            # Bounding boxes are scaled back to original frame coordinates.
+            scale = 1.0
+            h, w = gray.shape[:2]
+            if w > OCR_MAX_WIDTH:
+                scale = OCR_MAX_WIDTH / w
+                gray = cv2.resize(
+                    gray, (OCR_MAX_WIDTH, int(h * scale)),
+                    interpolation=cv2.INTER_AREA,
+                )
+
             data = pytesseract.image_to_data(
                 gray,
                 output_type=pytesseract.Output.DICT,
@@ -119,11 +132,18 @@ class OCRDecoder(Decoder):
                 continue
 
             avg_conf = sum(entry["conf"]) / len(entry["conf"]) / 100.0
+            bbox = entry["box"]
+            if scale != 1.0 and bbox is not None:
+                x, y, bw, bh = bbox
+                bbox = (
+                    int(x / scale), int(y / scale),
+                    int(bw / scale), int(bh / scale),
+                )
             results.append(Detection(
                 type="TXT",
                 value=text,
                 confidence=avg_conf,
-                bbox=entry["box"],
+                bbox=bbox,
             ))
 
         return results

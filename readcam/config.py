@@ -24,6 +24,10 @@ TEXT_MIN_CONFIDENCE = 30        # min Tesseract confidence for text results
 TEXT_MIN_LENGTH = 2             # min characters for text results
 TEXT_REQUIRED_HITS = 2          # text must be seen N times before appearing
 
+# OCR performance
+OCR_MAX_WIDTH = 1000            # downscale frames wider than this before OCR
+OCR_ADAPTIVE_HEADROOM = 1.25    # adaptive interval = OCR duration x this
+
 # Bounding box colours (BGR for OpenCV)
 COLOUR_QR = (46, 204, 113)          # Green
 COLOUR_BARCODE = (219, 152, 52)     # Blue

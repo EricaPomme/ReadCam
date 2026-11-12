@@ -114,7 +114,7 @@ class PreviewPanel(ctk.CTkFrame):
         new_h = int(img_h * scale)
 
         if new_w != img_w or new_h != img_h:
-            image = image.resize((new_w, new_h), Image.LANCZOS)
+            image = image.resize((new_w, new_h), Image.BILINEAR)
 
         return image
 

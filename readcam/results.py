@@ -44,6 +44,12 @@ class ResultsManager:
     def __init__(self):
         self._results: dict[tuple[str, str], Result] = {}
         self._lock = threading.Lock()
+        self._version = 0  # bumped on every mutation (UI refresh throttling)
+
+    @property
+    def version(self) -> int:
+        """Monotonic change counter for cheap dirty-checking."""
+        return self._version
 
     def add_or_update(
         self,
@@ -60,6 +66,7 @@ class ResultsManager:
         now = time.time()
 
         with self._lock:
+            self._version += 1
             if key in self._results:
                 result = self._results[key]
                 result.confidence = min(result.confidence + 1, CONFIDENCE_MAX)
@@ -99,6 +106,7 @@ class ResultsManager:
         now = time.time()
 
         with self._lock:
+            self._version += 1
             if key in self._results:
                 result = self._results[key]
                 result.confidence = min(result.confidence + 1, CONFIDENCE_MAX)
@@ -126,6 +134,7 @@ class ResultsManager:
         """Remove a result by type and value."""
         key = (det_type, value)
         with self._lock:
+            self._version += 1
             if key in self._results:
                 del self._results[key]
                 return True
@@ -150,8 +159,10 @@ class ResultsManager:
                     decay_amount = int((elapsed - CONFIDENCE_DECAY_DELAY) / 2) + 1
                     result.confidence = max(0, result.confidence - decay_amount)
 
-            for key in to_remove:
-                del self._results[key]
+            if to_remove:
+                self._version += 1
+                for key in to_remove:
+                    del self._results[key]
 
         for key in to_remove:
             logger.info("Removed stale result: %s %r", key[0], key[1])
@@ -174,6 +185,7 @@ class ResultsManager:
     def clear(self) -> None:
         """Remove all results."""
         with self._lock:
+            self._version += 1
             self._results.clear()
 
     @property

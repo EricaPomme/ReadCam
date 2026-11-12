@@ -12,6 +12,9 @@ from typing import Optional
 
 import cv2
 
+from .config import OCR_ADAPTIVE_HEADROOM
+from .decoders.ocr_decoder import OCRDecoder
+
 logger = logging.getLogger(__name__)
 
 
@@ -133,6 +136,7 @@ class CaptureThread(threading.Thread):
         stop_event: threading.Event,
         frame_interval_ms: int = DEFAULT_FRAME_INTERVAL,
         ocr_interval_ms: int = 1500,
+        ocr_interval_holder: Optional[dict] = None,
         debug: bool = False,
     ):
         super().__init__(name="capture", daemon=True)
@@ -143,6 +147,11 @@ class CaptureThread(threading.Thread):
         self.stop_event = stop_event
         self.frame_interval = frame_interval_ms / 1000.0
         self.ocr_interval = ocr_interval_ms / 1000.0
+        # Shared with the OCR thread, which raises the interval adaptively
+        self.ocr_interval_holder = (
+            ocr_interval_holder if ocr_interval_holder is not None
+            else {"ms": ocr_interval_ms}
+        )
         self.debug = debug
 
         self._cap: Optional[cv2.VideoCapture] = None
@@ -199,6 +208,14 @@ class CaptureThread(threading.Thread):
             now = time.time()
             if now - self._last_ocr_time >= self.ocr_interval:
                 self._last_ocr_time = now
+                # Pick up adaptive interval updates from the OCR thread
+                adaptive_ms = self.ocr_interval_holder.get("ms")
+                if adaptive_ms and abs(adaptive_ms / 1000.0 - self.ocr_interval) > 0.001:
+                    self.ocr_interval = adaptive_ms / 1000.0
+                    logger.info(
+                        "Adaptive OCR interval updated to %.0f ms",
+                        adaptive_ms,
+                    )
                 try:
                     self.ocr_queue.put_nowait(frame.copy())
                     logger.debug("Pushed frame to OCR queue")
@@ -287,6 +304,7 @@ class OCRThread(threading.Thread):
         result_queue: queue.Queue,
         stop_event: threading.Event,
         pause_event: threading.Event,
+        ocr_interval_holder: Optional[dict] = None,
         debug: bool = False,
     ):
         super().__init__(name="ocr", daemon=True)
@@ -294,6 +312,11 @@ class OCRThread(threading.Thread):
         self.result_queue = result_queue
         self.stop_event = stop_event
         self.pause_event = pause_event
+        # Shared with the capture thread, which applies our adaptive interval
+        self.ocr_interval_holder = (
+            ocr_interval_holder if ocr_interval_holder is not None
+            else {"ms": 1500}
+        )
         self.debug = debug
 
         self._decoder = None
@@ -301,7 +324,6 @@ class OCRThread(threading.Thread):
     def run(self) -> None:
         """Main OCR processing loop."""
         logger.info("OCR thread starting...")
-        from .decoders.ocr_decoder import OCRDecoder
         self._decoder = OCRDecoder(debug=self.debug)
 
         if not self._decoder.available:
@@ -327,6 +349,18 @@ class OCRThread(threading.Thread):
                 logger.debug("OCR processing error: %s", exc)
                 continue
             elapsed_ms = (time.perf_counter() - start) * 1000
+
+            # Adaptive throttle: if OCR took longer than the current
+            # interval, raise the interval so capture FPS stays healthy.
+            current_ms = self.ocr_interval_holder.get("ms", 1500)
+            if elapsed_ms * OCR_ADAPTIVE_HEADROOM > current_ms:
+                adaptive_ms = int(elapsed_ms * OCR_ADAPTIVE_HEADROOM)
+                self.ocr_interval_holder["ms"] = adaptive_ms
+                logger.info(
+                    "OCR took %.0f ms (> %.0f ms interval); "
+                    "raising OCR interval to %d ms",
+                    elapsed_ms, current_ms, adaptive_ms,
+                )
 
             if detections:
                 for det in detections:
