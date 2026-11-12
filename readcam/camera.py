@@ -1,0 +1,303 @@
+"""Camera discovery and background capture thread."""
+
+import os
+import queue
+import subprocess
+import threading
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Optional
+
+import cv2
+
+
+@contextmanager
+def _suppress_opencv_stderr():
+    """Temporarily redirect stderr to suppress OpenCV C++ noise."""
+    stderr_fd = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 2)
+    os.close(devnull)
+    try:
+        yield
+    finally:
+        os.dup2(stderr_fd, 2)
+        os.close(stderr_fd)
+import numpy as np
+
+from .config import DEFAULT_FRAME_INTERVAL
+
+
+@dataclass
+class CameraInfo:
+    """Describes a detected camera device."""
+    index: int
+    name: str
+
+
+@dataclass
+class ZBarResult:
+    """A single result from zbar barcode/QR decoding."""
+    type: str            # "QRCODE", "EAN-13", "CODE128", etc.
+    data: str            # Decoded text content
+    points: list         # Polygon points [(x, y), ...]
+    quality: int         # Quality metric from zbar
+    rect: Optional[tuple] = None  # (x, y, w, h) derived bounding box
+
+
+class CameraDiscovery:
+    """Probe camera indices to find available devices."""
+
+    MAX_PROBE = 10
+
+    @classmethod
+    def list_cameras(cls) -> list[CameraInfo]:
+        """Return all detected cameras with their names."""
+        cameras = []
+        with _suppress_opencv_stderr():
+            for i in range(cls.MAX_PROBE):
+                cap = cv2.VideoCapture(i, cv2.CAP_ANY)
+                if cap.isOpened():
+                    name = cls._get_camera_name(i)
+                    cameras.append(CameraInfo(index=i, name=name))
+                    cap.release()
+        return cameras
+
+    @classmethod
+    def _get_camera_name(cls, index: int) -> str:
+        """Attempt to get a human-readable camera name.
+
+        Tries ffmpeg first (if available), then falls back
+        to the generic 'Camera N' label.
+        """
+        name = cls._try_ffmpeg_name(index)
+        if name:
+            return name
+        return f"Camera {index}"
+
+    @classmethod
+    def _try_ffmpeg_name(cls, index: int) -> Optional[str]:
+        """Query ffmpeg DirectShow devices for a friendly name."""
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
+                capture_output=True, text=True, timeout=10,
+            )
+            # ffmpeg lists DirectShow devices in stderr like:
+            #   "HD Webcam C920" (usb, ...
+            # Parse by scanning for device entries
+            lines = result.stderr.splitlines()
+            in_device_list = False
+            device_index = 0
+            for line in lines:
+                stripped = line.strip()
+                if "DirectShow device list" in stripped:
+                    in_device_list = True
+                    continue
+                if in_device_list and ("Alternate name" in stripped or not stripped):
+                    continue
+                if in_device_list and '"' in stripped:
+                    if device_index == index:
+                        # Extract name between quotes
+                        start = stripped.find('"')
+                        end = stripped.find('"', start + 1)
+                        if start != -1 and end != -1:
+                            return stripped[start + 1:end]
+                    device_index += 1
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+        return None
+
+
+class CaptureThread(threading.Thread):
+    """Dedicated thread for camera capture and fast zbar decoding.
+
+    Captures frames from the selected camera, runs zbar decode on
+    each frame, and pushes the frame + results to a shared queue
+    for the UI thread to consume.
+    """
+
+    def __init__(
+        self,
+        camera_index: int,
+        frame_queue: queue.Queue,
+        ocr_queue: queue.Queue,
+        pause_event: threading.Event,
+        stop_event: threading.Event,
+        frame_interval_ms: int = DEFAULT_FRAME_INTERVAL,
+        ocr_interval_ms: int = 1500,
+        debug: bool = False,
+    ):
+        super().__init__(name="capture", daemon=True)
+        self.camera_index = camera_index
+        self.frame_queue = frame_queue
+        self.ocr_queue = ocr_queue
+        self.pause_event = pause_event
+        self.stop_event = stop_event
+        self.frame_interval = frame_interval_ms / 1000.0
+        self.ocr_interval = ocr_interval_ms / 1000.0
+        self.debug = debug
+
+        self._cap: Optional[cv2.VideoCapture] = None
+        self._last_ocr_time = 0.0
+        self._fps_counter = 0
+        self._fps_timer = time.time()
+        self.current_fps = 0.0
+        self._camera_name: Optional[str] = None
+
+    def run(self) -> None:
+        """Main capture loop."""
+        self._cap = cv2.VideoCapture(self.camera_index)
+        if not self._cap.isOpened():
+            return
+
+        while not self.stop_event.is_set():
+            if self.pause_event.is_set():
+                time.sleep(0.05)
+                continue
+
+            ret, frame = self._cap.read()
+            if not ret:
+                time.sleep(0.05)
+                continue
+
+            # Fast decode: run zbar on the frame
+            zbar_results = self._decode_zbar(frame)
+
+            # Push to UI queue (non-blocking, drop if lagging)
+            try:
+                self.frame_queue.put_nowait((frame, zbar_results))
+            except queue.Full:
+                pass
+
+            # Periodically push a frame to the OCR pipeline
+            now = time.time()
+            if now - self._last_ocr_time >= self.ocr_interval:
+                self._last_ocr_time = now
+                try:
+                    self.ocr_queue.put_nowait(frame.copy())
+                except queue.Full:
+                    pass
+
+            # Track FPS
+            self._fps_counter += 1
+            elapsed = time.time() - self._fps_timer
+            if elapsed >= 1.0:
+                self.current_fps = self._fps_counter / elapsed
+                self._fps_counter = 0
+                self._fps_timer = time.time()
+
+            # Throttle
+            time.sleep(self.frame_interval)
+
+        if self._cap:
+            self._cap.release()
+
+    def _decode_zbar(self, frame: np.ndarray) -> list[ZBarResult]:
+        """Run zbar barcode/QR decoding on the frame."""
+        try:
+            from pyzbar.pyzbar import decode
+        except ImportError:
+            return []
+
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            symbols = decode(gray)
+            results = []
+            for sym in symbols:
+                data = sym.data
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8", errors="replace")
+                else:
+                    data = str(data)
+                points = getattr(sym, 'points', [])
+                results.append(ZBarResult(
+                    type=str(getattr(sym, 'type', 'UNKNOWN')).upper(),
+                    data=data,
+                    points=points,
+                    quality=getattr(sym, 'quality', 0),
+                    rect=self._points_to_rect(points),
+                ))
+            return results
+        except Exception as exc:
+            if self.debug:
+                import logging
+                logging.debug("zbar decode error: %s", exc)
+            return []
+
+    @staticmethod
+    def _points_to_rect(points: list) -> Optional[tuple]:
+        """Convert zbar polygon points to a (x, y, w, h) rect."""
+        if not points:
+            return None
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        return (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+
+    @property
+    def camera_name(self) -> str:
+        """Return the human-readable camera name."""
+        if self._camera_name is None:
+            cameras = CameraDiscovery.list_cameras()
+            for cam in cameras:
+                if cam.index == self.camera_index:
+                    self._camera_name = cam.name
+                    break
+            if self._camera_name is None:
+                self._camera_name = f"Camera {self.camera_index}"
+        return self._camera_name
+
+
+class OCRThread(threading.Thread):
+    """Background thread for optical character recognition.
+
+    Consumes frames from the OCR queue, detects text regions via
+    contour analysis, runs Tesseract on each region, and pushes
+    the resulting text detections to the result queue.
+    """
+
+    def __init__(
+        self,
+        ocr_queue: queue.Queue,
+        result_queue: queue.Queue,
+        stop_event: threading.Event,
+        pause_event: threading.Event,
+        debug: bool = False,
+    ):
+        super().__init__(name="ocr", daemon=True)
+        self.ocr_queue = ocr_queue
+        self.result_queue = result_queue
+        self.stop_event = stop_event
+        self.pause_event = pause_event
+        self.debug = debug
+
+        self._decoder = None
+
+    def run(self) -> None:
+        """Main OCR processing loop."""
+        # Lazy-import the decoder so ImportError can be handled gracefully
+        from .decoders.ocr_decoder import OCRDecoder
+        self._decoder = OCRDecoder(debug=self.debug)
+
+        if not self._decoder.available:
+            return
+
+        while not self.stop_event.is_set():
+            if self.pause_event.is_set():
+                time.sleep(0.1)
+                continue
+
+            try:
+                frame = self.ocr_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            try:
+                detections = self._decoder.decode_frame(frame)
+                if detections:
+                    self.result_queue.put(detections)
+            except Exception as exc:
+                if self.debug:
+                    import logging
+                    logging.debug("OCR processing error: %s", exc)

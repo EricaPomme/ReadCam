@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "readcam"
+version = "0.1.0"
+description = "Live camera scanner for QR codes, barcodes, and text"
+readme = "README.md"
+authors = [
+    {name = "Erica Young"},
+]
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics :: Capture :: Digital Camera",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "opencv-python>=4.8",
+    "customtkinter>=5.2",
+    "pillow>=10",
+    "pyzbar>=0.1",
+    "pytesseract>=0.3",
+    "pyperclip>=1.8",
+]
+
+[project.scripts]
+readcam = "readcam.cli:entry_point"
+
+[tool.setuptools.packages.find]
+include = ["readcam*"]
