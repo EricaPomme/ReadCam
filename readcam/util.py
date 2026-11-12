@@ -1,7 +1,38 @@
 """Utility functions."""
 
+import logging
+import sys
 import time
 import pyperclip
+
+logger = logging.getLogger(__name__)
+
+
+def setup_logging(verbose: bool = False) -> None:
+    """Configure root logging.
+
+    Without *verbose*: WARNING and above, minimal format.
+    With *verbose*: DEBUG and above with timestamps, module names,
+    and thread names -- suitable for tracing scanner events.
+    """
+    if verbose:
+        level = logging.DEBUG
+        fmt = (
+            "%(asctime)s.%(msecs)03d "
+            "[%(threadName)s] %(levelname)s %(name)s: %(message)s"
+        )
+        datefmt = "%Y-%m-%dT%H:%M:%S"
+    else:
+        level = logging.WARNING
+        fmt = "%(levelname)s: %(message)s"
+        datefmt = None
+
+    logging.basicConfig(level=level, format=fmt, datefmt=datefmt, stream=sys.stderr)
+
+
+def log_event(message: str, *args) -> None:
+    """Log an INFO-level scanner event (visible with --verbose)."""
+    logger.info(message, *args)
 
 
 def copy_to_clipboard(text: str) -> bool:

@@ -1,11 +1,14 @@
 """Main ReadCam application window built with CustomTkinter."""
 
+import logging
 import queue
 import threading
 import time
 from typing import Optional
 
 import customtkinter as ctk
+
+logger = logging.getLogger(__name__)
 
 from ..camera import CaptureThread, CameraDiscovery, OCRThread
 from ..config import (
@@ -71,6 +74,10 @@ class ReadCamApp(ctk.CTk):
         # Decoder availability (checked once at startup)
         self._ocr_available = OCRDecoder._check_available()
         self._zbar_available = ZBarDecoder._check_available()
+        logger.info(
+            "Decoder availability: zbar=%s, OCR=%s",
+            self._zbar_available, self._ocr_available,
+        )
 
         # Results
         self.results_manager = ResultsManager()
@@ -129,7 +136,7 @@ class ReadCamApp(ctk.CTk):
         # --- Keyboard shortcuts ---
         self.bind("<space>", lambda _e: self._toggle_pause())
         self.bind("<Escape>", lambda _e: self._on_close())
-        self.bind("<Key-r>", lambda _e: self.results_manager.clear())
+        self.bind("<Key-r>", lambda _e: self._clear_results())
 
     # ------------------------------------------------------------------
     # UI update loop (runs on the main thread via .after())
@@ -219,20 +226,32 @@ class ReadCamApp(ctk.CTk):
 
     def run(self) -> None:
         """Enter the CTk main loop."""
+        logger.info("Entering mainloop")
         self.mainloop()
+        logger.info("Mainloop exited")
 
     def _toggle_pause(self) -> None:
         """Pause or resume scanning."""
         self._paused = not self._paused
         if self._paused:
             self.pause_event.set()
+            logger.info("Scanning paused")
         else:
             self.pause_event.clear()
+            logger.info("Scanning resumed")
+
+    def _clear_results(self) -> None:
+        """Clear all results (R key)."""
+        count = self.results_manager.count
+        self.results_manager.clear()
+        logger.info("Cleared %d result(s)", count)
 
     def _on_close(self) -> None:
         """Clean up threads and close the window."""
+        logger.info("Shutting down: signalling background threads")
         self.stop_event.set()
         try:
             self.destroy()
         except Exception:
             pass
+        logger.info("Shutdown complete")

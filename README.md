@@ -49,7 +49,7 @@ pip install -e .
 ## Usage
 
 ```text
-readcam [--list-cameras] [--camera INDEX] [--ocr-interval MS] [--frame-interval MS]
+readcam [--list-cameras] [--camera INDEX] [--ocr-interval MS] [--frame-interval MS] [--verbose]
 ```
 
 ### List available cameras
@@ -80,6 +80,18 @@ readcam --camera 0
 # Process OCR every 2 seconds (default 1.5s), capture every 33 ms (~30 fps)
 readcam --ocr-interval 2000 --frame-interval 33
 ```
+
+### Verbose event logging
+
+```bash
+# Log scanner events to the console (ISO 8601 timestamps)
+readcam --verbose
+```
+
+Logged events include: camera discovery, device open/release, zbar
+barcode/QR detections, OCR detections (with confidence and timing),
+new results entering the list, stale result removal, clipboard copies,
+pause/resume, and shutdown.
 
 ## Keyboard Shortcuts
 

@@ -43,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable verbose debug logging.",
     )
+    scan.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Log scanner events (devices, detections, clipboard) to the console.",
+    )
 
     # --- list-cameras ---
     sub.add_parser(
@@ -69,7 +74,6 @@ def entry_point() -> int:
     """Application entry point. Returns exit code."""
     parser = build_parser()
     args, extra = parser.parse_known_args()
-
     command = args.command
 
     # Default: if no subcommand given and no --list-cameras, treat as "scan"
@@ -88,6 +92,11 @@ def entry_point() -> int:
         # Re-parse as "scan"
         args = parser.parse_args(["scan"] + extra)
         command = "scan"
+
+    # Logging setup -- applies to every subcommand
+    from .util import setup_logging
+    verbose = getattr(args, "verbose", False) or getattr(args, "debug", False)
+    setup_logging(verbose=verbose)
 
     if command == "list-cameras" or command == "ls":
         cameras = CameraDiscovery.list_cameras()

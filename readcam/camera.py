@@ -1,5 +1,6 @@
 """Camera discovery and background capture thread."""
 
+import logging
 import os
 import queue
 import subprocess
@@ -10,6 +11,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 import cv2
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -55,13 +58,16 @@ class CameraDiscovery:
     def list_cameras(cls) -> list[CameraInfo]:
         """Return all detected cameras with their names."""
         cameras = []
+        logger.debug("Probing camera indices 0-%d...", cls.MAX_PROBE - 1)
         with _suppress_opencv_stderr():
             for i in range(cls.MAX_PROBE):
                 cap = cv2.VideoCapture(i, cv2.CAP_ANY)
                 if cap.isOpened():
                     name = cls._get_camera_name(i)
+                    logger.info("Found camera [%d] %s", i, name)
                     cameras.append(CameraInfo(index=i, name=name))
                     cap.release()
+        logger.info("Camera discovery complete: %d found", len(cameras))
         return cameras
 
     @classmethod
@@ -148,9 +154,20 @@ class CaptureThread(threading.Thread):
 
     def run(self) -> None:
         """Main capture loop."""
+        logger.info("Opening camera %d...", self.camera_index)
         self._cap = cv2.VideoCapture(self.camera_index)
         if not self._cap.isOpened():
+            logger.error("Failed to open camera %d", self.camera_index)
             return
+
+        width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        logger.info(
+            "Camera %d opened (%dx%d); capture loop started "
+            "(frame interval %.0f ms, OCR interval %.0f ms)",
+            self.camera_index, width, height,
+            self.frame_interval * 1000, self.ocr_interval * 1000,
+        )
 
         while not self.stop_event.is_set():
             if self.pause_event.is_set():
@@ -159,17 +176,24 @@ class CaptureThread(threading.Thread):
 
             ret, frame = self._cap.read()
             if not ret:
+                logger.warning("Frame read failed; retrying")
                 time.sleep(0.05)
                 continue
 
             # Fast decode: run zbar on the frame
             zbar_results = self._decode_zbar(frame)
+            if zbar_results:
+                for zr in zbar_results:
+                    logger.info(
+                        "zbar: %s %r (quality=%d)",
+                        zr.type, zr.data, zr.quality,
+                    )
 
             # Push to UI queue (non-blocking, drop if lagging)
             try:
                 self.frame_queue.put_nowait((frame, zbar_results))
             except queue.Full:
-                pass
+                logger.debug("frame_queue full; dropped frame")
 
             # Periodically push a frame to the OCR pipeline
             now = time.time()
@@ -177,28 +201,31 @@ class CaptureThread(threading.Thread):
                 self._last_ocr_time = now
                 try:
                     self.ocr_queue.put_nowait(frame.copy())
+                    logger.debug("Pushed frame to OCR queue")
                 except queue.Full:
-                    pass
+                    logger.debug("ocr_queue full; dropped OCR frame")
 
             # Track FPS
             self._fps_counter += 1
             elapsed = time.time() - self._fps_timer
             if elapsed >= 1.0:
                 self.current_fps = self._fps_counter / elapsed
+                logger.debug("Capture FPS: %.1f", self.current_fps)
                 self._fps_counter = 0
                 self._fps_timer = time.time()
 
             # Throttle
             time.sleep(self.frame_interval)
 
-        if self._cap:
-            self._cap.release()
+        self._cap.release()
+        logger.info("Camera %d released; capture thread exiting", self.camera_index)
 
     def _decode_zbar(self, frame: np.ndarray) -> list[ZBarResult]:
         """Run zbar barcode/QR decoding on the frame."""
         try:
             from pyzbar.pyzbar import decode
-        except ImportError:
+        except (ImportError, OSError):
+            logger.warning("pyzbar unavailable; barcode/QR decoding disabled")
             return []
 
         try:
@@ -221,9 +248,7 @@ class CaptureThread(threading.Thread):
                 ))
             return results
         except Exception as exc:
-            if self.debug:
-                import logging
-                logging.debug("zbar decode error: %s", exc)
+            logger.debug("zbar decode error: %s", exc)
             return []
 
     @staticmethod
@@ -252,9 +277,8 @@ class CaptureThread(threading.Thread):
 class OCRThread(threading.Thread):
     """Background thread for optical character recognition.
 
-    Consumes frames from the OCR queue, detects text regions via
-    contour analysis, runs Tesseract on each region, and pushes
-    the resulting text detections to the result queue.
+    Consumes frames from the OCR queue, runs whole-frame Tesseract
+    OCR, and pushes the resulting text detections to the result queue.
     """
 
     def __init__(
@@ -276,12 +300,15 @@ class OCRThread(threading.Thread):
 
     def run(self) -> None:
         """Main OCR processing loop."""
-        # Lazy-import the decoder so ImportError can be handled gracefully
+        logger.info("OCR thread starting...")
         from .decoders.ocr_decoder import OCRDecoder
         self._decoder = OCRDecoder(debug=self.debug)
 
         if not self._decoder.available:
+            logger.warning("Tesseract unavailable; OCR disabled")
             return
+
+        logger.info("OCR thread ready (Tesseract detected)")
 
         while not self.stop_event.is_set():
             if self.pause_event.is_set():
@@ -293,11 +320,22 @@ class OCRThread(threading.Thread):
             except queue.Empty:
                 continue
 
+            start = time.perf_counter()
             try:
-                detections = self._decoder.decode_frame(frame)
-                if detections:
-                    self.result_queue.put(detections)
+                detections = self._decoder.decode(frame)
             except Exception as exc:
-                if self.debug:
-                    import logging
-                    logging.debug("OCR processing error: %s", exc)
+                logger.debug("OCR processing error: %s", exc)
+                continue
+            elapsed_ms = (time.perf_counter() - start) * 1000
+
+            if detections:
+                for det in detections:
+                    logger.info(
+                        "ocr: %s %r (conf=%.2f, bbox=%s) [%.0f ms]",
+                        det.type, det.value, det.confidence,
+                        det.bbox, elapsed_ms,
+                    )
+                try:
+                    self.result_queue.put(detections)
+                except Exception:
+                    pass

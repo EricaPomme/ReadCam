@@ -1,5 +1,6 @@
 """Results manager with confidence accumulation and decay."""
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from .config import (
     CONFIDENCE_REMOVE_DELAY,
     TEXT_REQUIRED_HITS,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -78,6 +81,7 @@ class ResultsManager:
                 bbox=bbox,
             )
             self._results[key] = result
+            logger.info("New result: %s %r", det_type, value)
             return result
 
     def add_text_hit(
@@ -112,6 +116,10 @@ class ResultsManager:
                 bbox=bbox,
             )
             self._results[key] = result
+            logger.debug(
+                "Text sighting %d/%d: %r",
+                result.confidence, TEXT_REQUIRED_HITS, value,
+            )
             return None  # Requires another sighting to appear
 
     def remove(self, det_type: str, value: str) -> bool:
@@ -144,6 +152,9 @@ class ResultsManager:
 
             for key in to_remove:
                 del self._results[key]
+
+        for key in to_remove:
+            logger.info("Removed stale result: %s %r", key[0], key[1])
 
     def get_sorted(self) -> list[Result]:
         """Return all results, sorted by confidence then recency."""

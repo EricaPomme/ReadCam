@@ -1,10 +1,14 @@
 """Results list panel with per-row copy buttons."""
 
+import logging
+
 import customtkinter as ctk
 
 from ..results import Result
 from ..util import copy_to_clipboard, format_relative_time, truncate
 from .theme import COLOURS, FONTS
+
+logger = logging.getLogger(__name__)
 
 
 class ResultsPanel(ctk.CTkScrollableFrame):
@@ -136,7 +140,11 @@ class ResultsPanel(ctk.CTkScrollableFrame):
     @staticmethod
     def _on_copy(value: str) -> None:
         """Copy the result value to clipboard."""
-        copy_to_clipboard(value)
+        ok = copy_to_clipboard(value)
+        if ok:
+            logger.info("Copied to clipboard: %r", value)
+        else:
+            logger.warning("Clipboard copy failed for %r", value)
 
     @staticmethod
     def _badge_colour(det_type: str) -> str:
