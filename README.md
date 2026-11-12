@@ -9,7 +9,7 @@ Live camera scanner that detects QR codes, barcodes, and text in real time.
 - **QR codes** and **barcodes** (EAN, UPC, Code 128/39/93, PDF417, and more) via zbar
 - **Text / OCR** via Tesseract (detects text regions automatically using contour analysis)
 - Live camera preview with colour-coded bounding boxes
-- Results list with confidence tracking and one-click **Copy**
+- Results list with confidence tracking -- **click a result's badge to copy** its value
 - Pause/resume scanning (Space bar)
 - Automatic confidence decay -- stale results fade and disappear
 
@@ -107,15 +107,15 @@ pause/resume, and shutdown.
 +-----------------------------+---------------------------+
 |   Camera Preview            |   Results                 |
 |                             |                           |
-|   [QR: example.com]  [ ]   |   [QR] example.com  [Copy]|
-|   +------------------+      |         ++++++++ 8x       |
+|   [QR: example.com]  [ ]   |   [QR] example.com        |
+|   +------------------+      |       seen 8x, 14s visible|
 |   |  QR code here    |      |                           |
-|   +------------------+      |   [TXT] Welcome to...[Copy]|
-|                             |         +++ 2x            |
+|   +------------------+      |   [TXT] Welcome to...     |
+|                             |       seen 3x, 5s visible |
+|                             |                           |
 |   [TXT: Welcome to...]      |                           |
-|   +------------------+      |                           |
+|   +------------------+      |   (click a badge to copy) |
 +-----------------------------+---------------------------+
-| Camera 0 . 20 FPS . 3 results                           |
 +---------------------------------------------------------+
 
 Colours:

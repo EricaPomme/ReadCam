@@ -11,6 +11,67 @@ from .theme import COLOURS, FONTS
 
 logger = logging.getLogger(__name__)
 
+# Hover shades for the badge copy buttons (keyed like theme.COLOURS)
+_BADGE_HOVER = {
+    "badge_qr": "#27ae60",
+    "badge_barcode": "#2980b9",
+    "badge_text": "#d35400",
+}
+
+
+def _badge_key(det_type: str) -> str:
+    """Map a detection type to its colour key."""
+    if det_type == "QR":
+        return "badge_qr"
+    elif det_type == "TXT":
+        return "badge_text"
+    return "badge_barcode"
+
+
+class ToolTip:
+    """Minimal tooltip that appears on hover, below a widget."""
+
+    def __init__(self, widget, text: str, delay_ms: int = 600):
+        self._widget = widget
+        self._text = text
+        self._delay_ms = delay_ms
+        self._tip = None
+        self._after_id = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _event=None) -> None:
+        self._cancel()
+        self._after_id = self._widget.after(self._delay_ms, self._show)
+
+    def _cancel(self) -> None:
+        if self._after_id is not None:
+            self._widget.after_cancel(self._after_id)
+            self._after_id = None
+
+    def _show(self) -> None:
+        if self._tip is not None:
+            return
+        x = self._widget.winfo_rootx() + 10
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
+        self._tip = tw = ctk.CTkToplevel(self._widget)
+        tw.overrideredirect(True)
+        tw.attributes("-topmost", True)
+        label = ctk.CTkLabel(
+            tw, text=self._text, font=FONTS["small"],
+            fg_color=COLOURS["bg"], corner_radius=4,
+            padx=6, pady=4, wraplength=420, justify="left",
+        )
+        label.pack()
+        tw.wm_geometry(f"+{x}+{y}")
+
+    def _hide(self, _event=None) -> None:
+        self._cancel()
+        if self._tip is not None:
+            self._tip.destroy()
+            self._tip = None
+
 
 class ResultsPanel(ctk.CTkScrollableFrame):
     """Scrollable list of scanned results with per-row Copy buttons."""
@@ -56,23 +117,26 @@ class ResultsPanel(ctk.CTkScrollableFrame):
         """Create a new row widget for a single result."""
         row = ctk.CTkFrame(self, fg_color=COLOURS["card_bg"], corner_radius=8)
 
-        # Layout: badge | content (value + meta + bar) | copy button
-        row.columnconfigure(0, weight=0, minsize=50)  # Badge
+        # Layout: badge (click to copy) | content
+        row.columnconfigure(0, weight=0, minsize=64)  # Badge / copy button
         row.columnconfigure(1, weight=1)               # Content
-        row.columnconfigure(2, weight=0, minsize=65)   # Copy
 
-        # --- Badge ---
+        # --- Badge doubles as the copy button ---
         badge_colour = self._badge_colour(result.type)
-        badge = ctk.CTkLabel(
+        badge = ctk.CTkButton(
             row,
             text=result.type,
             font=FONTS["badge"],
             text_color="white",
             fg_color=badge_colour,
-            corner_radius=4,
-            width=50,
+            hover_color=self._badge_hover(result.type),
+            corner_radius=6,
+            width=60,
+            height=44,
+            command=lambda v=result.value: self._on_copy(v),
         )
         badge.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        ToolTip(badge, f"Copy: {result.value}")
 
         # --- Value and metadata ---
         content_frame = ctk.CTkFrame(row, fg_color="transparent")
@@ -106,19 +170,6 @@ class ResultsPanel(ctk.CTkScrollableFrame):
         progress.set(confidence_pct)
         progress.pack(anchor="w", pady=(2, 0))
 
-        # --- Copy button ---
-        copy_btn = ctk.CTkButton(
-            row,
-            text="Copy",
-            font=FONTS["small"],
-            fg_color=COLOURS["success"],
-            hover_color="#27ae60",
-            width=60,
-            height=28,
-            command=lambda v=result.value: self._on_copy(v),
-        )
-        copy_btn.grid(row=0, column=2, padx=5, pady=5, sticky="nsew")
-
         return row
 
     def _update_result_row(self, row: ctk.CTkFrame, result: Result) -> None:
@@ -149,12 +200,12 @@ class ResultsPanel(ctk.CTkScrollableFrame):
     @staticmethod
     def _badge_colour(det_type: str) -> str:
         """Return the hex colour for a detection type badge."""
-        if det_type == "QR":
-            return COLOURS["badge_qr"]
-        elif det_type == "TXT":
-            return COLOURS["badge_text"]
-        else:
-            return COLOURS["badge_barcode"]
+        return COLOURS[_badge_key(det_type)]
+
+    @staticmethod
+    def _badge_hover(det_type: str) -> str:
+        """Return the hover hex colour for a detection type badge."""
+        return _BADGE_HOVER[_badge_key(det_type)]
 
 
 class ResultRowMeta:
