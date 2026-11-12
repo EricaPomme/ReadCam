@@ -4,6 +4,7 @@ import logging
 
 import customtkinter as ctk
 
+from ..config import CONFIDENCE_MAX
 from ..results import Result
 from ..util import copy_to_clipboard, format_relative_time, truncate
 from .theme import COLOURS, FONTS
@@ -77,25 +78,25 @@ class ResultsPanel(ctk.CTkScrollableFrame):
         content_frame = ctk.CTkFrame(row, fg_color="transparent")
         content_frame.grid(row=0, column=1, padx=5, pady=5, sticky="nsew")
 
-        value_text = truncate(result.value, 60)
+        value_text = truncate(result.value, 80)
         value_label = ctk.CTkLabel(
             content_frame,
             text=value_text,
             font=FONTS["mono"],
             text_color=COLOURS["fg"],
-            wraplength=300,
+            wraplength=480,
         )
         value_label.pack(fill="x", anchor="w")
 
         meta_label = ctk.CTkLabel(
             content_frame,
-            text=f"{result.type} \u00b7 {format_relative_time(result.last_seen)}",
+            text=ResultRowMeta.format_meta(result),
             font=FONTS["small"],
             text_color="#888888",
         )
         meta_label.pack(fill="x", anchor="w", pady=(2, 0))
 
-        confidence_pct = min(result.confidence / 10.0, 1.0)
+        confidence_pct = min(result.confidence / CONFIDENCE_MAX, 1.0)
         progress = ctk.CTkProgressBar(
             content_frame,
             width=100,
@@ -122,7 +123,8 @@ class ResultsPanel(ctk.CTkScrollableFrame):
 
     def _update_result_row(self, row: ctk.CTkFrame, result: Result) -> None:
         """Update metadata in an existing row without rebuilding it."""
-        confidence_pct = min(result.confidence / 10.0, 1.0)
+        confidence_pct = min(result.confidence / CONFIDENCE_MAX, 1.0)
+        new_meta = ResultRowMeta.format_meta(result)
         for child in row.winfo_children():
             if isinstance(child, ctk.CTkProgressBar):
                 child.set(confidence_pct)
@@ -132,9 +134,7 @@ class ResultsPanel(ctk.CTkScrollableFrame):
                     if isinstance(subchild, ctk.CTkLabel):
                         txt = subchild.cget("text")
                         if "\u00b7" in txt:  # contains the middle-dot separator
-                            subchild.configure(
-                                text=f"{result.type} \u00b7 {format_relative_time(result.last_seen)}"
-                            )
+                            subchild.configure(text=new_meta)
                             break
 
     @staticmethod
@@ -155,3 +155,28 @@ class ResultsPanel(ctk.CTkScrollableFrame):
             return COLOURS["badge_text"]
         else:
             return COLOURS["badge_barcode"]
+
+
+class ResultRowMeta:
+    """Formats the per-row metadata line."""
+
+    @staticmethod
+    def format_meta(result: Result) -> str:
+        """Build 'seen 12x · visible 45s · 2s ago' style metadata."""
+        return (
+            f"seen {result.hits}x \u00b7 "
+            f"visible {ResultRowMeta._fmt_duration(result.visible_seconds)} \u00b7 "
+            f"{format_relative_time(result.last_seen)}"
+        )
+
+    @staticmethod
+    def _fmt_duration(seconds: float) -> str:
+        """Format a duration compactly ('45s', '2m05s', '1h02m')."""
+        seconds = int(seconds)
+        if seconds < 60:
+            return f"{seconds}s"
+        minutes, secs = divmod(seconds, 60)
+        if minutes < 60:
+            return f"{minutes}m{secs:02d}s"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h{minutes:02d}m"

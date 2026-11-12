@@ -46,9 +46,9 @@ class ReadCamApp(ctk.CTk):
         self.title(UI_TITLE)
         self.minsize(UI_MIN_WIDTH, UI_MIN_HEIGHT)
 
-        # Grid: preview (left) | results (right)
-        self.grid_columnconfigure(0, weight=1, minsize=UI_PREVIEW_MIN_WIDTH)
-        self.grid_columnconfigure(1, weight=0, minsize=UI_RESULTS_MIN_WIDTH)
+        # Grid: preview (left, fixed-ish) | results (right, expands)
+        self.grid_columnconfigure(0, weight=0, minsize=UI_PREVIEW_MIN_WIDTH)
+        self.grid_columnconfigure(1, weight=1, minsize=UI_RESULTS_MIN_WIDTH)
         self.grid_rowconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=0)  # status bar
 

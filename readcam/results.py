@@ -22,10 +22,18 @@ class Result:
 
     type: str                     # "QR", "EAN-13", "CODE128", "TXT"
     value: str                    # Decoded content
-    confidence: int = 1           # Number of consecutive detections
+    confidence: float = 1.0       # ~seconds visible (capped at CONFIDENCE_MAX)
+    hits: int = 1                 # Number of detections
     first_seen: float = 0.0       # Unix timestamp of first detection
     last_seen: float = 0.0        # Unix timestamp of most recent detection
     bbox: Optional[tuple] = None  # (x, y, w, h) most recent bounding box
+
+    @property
+    def visible_seconds(self) -> float:
+        """Total time this result has been visible."""
+        if self.last_seen and self.first_seen:
+            return self.last_seen - self.first_seen
+        return 0.0
 
     @property
     def key(self) -> tuple:
@@ -59,6 +67,9 @@ class ResultsManager:
     ) -> Optional[Result]:
         """Add or update a non-text detection.
 
+        Confidence accumulates as roughly *seconds visible* rather than
+        hit count, so slow decoders (OCR, ~1 hit per 1.5 s) and fast
+        decoders (zbar, ~10 hits per second) rank fairly.
         Returns the Result if added/updated, or None for text
         results that haven't reached the required hit threshold.
         """
@@ -69,7 +80,8 @@ class ResultsManager:
             self._version += 1
             if key in self._results:
                 result = self._results[key]
-                result.confidence = min(result.confidence + 1, CONFIDENCE_MAX)
+                result.confidence = self._accumulate(result, now)
+                result.hits += 1
                 result.last_seen = now
                 if bbox:
                     result.bbox = bbox
@@ -82,7 +94,8 @@ class ResultsManager:
             result = Result(
                 type=det_type,
                 value=value,
-                confidence=1,
+                confidence=1.0,
+                hits=1,
                 first_seen=now,
                 last_seen=now,
                 bbox=bbox,
@@ -90,6 +103,14 @@ class ResultsManager:
             self._results[key] = result
             logger.info("New result: %s %r", det_type, value)
             return result
+
+    @staticmethod
+    def _accumulate(result: Result, now: float) -> float:
+        """Grow confidence by elapsed time since the last sighting."""
+        elapsed = now - result.last_seen
+        # Cap the delta so a single long gap doesn't rocket the score
+        delta = min(max(elapsed, 0.0), 5.0)
+        return min(result.confidence + delta, CONFIDENCE_MAX)
 
     def add_text_hit(
         self,
@@ -109,16 +130,18 @@ class ResultsManager:
             self._version += 1
             if key in self._results:
                 result = self._results[key]
-                result.confidence = min(result.confidence + 1, CONFIDENCE_MAX)
+                result.confidence = self._accumulate(result, now)
+                result.hits += 1
                 result.last_seen = now
                 if bbox:
                     result.bbox = bbox
-                return result if result.confidence >= TEXT_REQUIRED_HITS else None
+                return result if result.hits >= TEXT_REQUIRED_HITS else None
 
             result = Result(
                 type="TXT",
                 value=value,
-                confidence=1,
+                confidence=1.0,
+                hits=1,
                 first_seen=now,
                 last_seen=now,
                 bbox=bbox,
@@ -126,7 +149,7 @@ class ResultsManager:
             self._results[key] = result
             logger.debug(
                 "Text sighting %d/%d: %r",
-                result.confidence, TEXT_REQUIRED_HITS, value,
+                result.hits, TEXT_REQUIRED_HITS, value,
             )
             return None  # Requires another sighting to appear
 
@@ -168,12 +191,17 @@ class ResultsManager:
             logger.info("Removed stale result: %s %r", key[0], key[1])
 
     def get_sorted(self) -> list[Result]:
-        """Return all results, sorted by confidence then recency."""
+        """Return all results ranked by prominence.
+
+        Primary: confidence (how consistently detected).
+        Secondary: total visible time (how long it has been in view).
+        Long-standing results therefore stay high in the list.
+        """
         with self._lock:
             results = list(self._results.values())
 
         results.sort(
-            key=lambda r: (r.confidence, r.last_seen),
+            key=lambda r: (r.confidence, r.visible_seconds, r.last_seen),
             reverse=True,
         )
         return results
