@@ -96,6 +96,7 @@ class ReadCamApp(ctk.CTk):
         self.pause_event = threading.Event()
         self.stop_event = threading.Event()
         self._paused = False
+        self._sash_dragging = False
 
         # State
         self._latest_frame: Optional = None
@@ -170,7 +171,9 @@ class ReadCamApp(ctk.CTk):
             self, width=4, corner_radius=0, fg_color=COLOURS["border"],
         )
         self.sash.grid(row=0, column=1, rowspan=3, sticky="ns", pady=5)
+        self.sash.bind("<ButtonPress-1>", self._sash_drag_start)
         self.sash.bind("<B1-Motion>", self._sash_drag)
+        self.sash.bind("<ButtonRelease-1>", self._sash_drag_end)
         self.sash.bind("<Enter>", lambda _e: self._set_sash_cursor("sb_h_double_arrow"))
         self.sash.bind("<Leave>", lambda _e: self._set_sash_cursor(""))
 
@@ -272,6 +275,26 @@ class ReadCamApp(ctk.CTk):
     def _set_sash_cursor(self, cursor: str) -> None:
         """Show a resize cursor while hovering the sash."""
         self.sash.configure(cursor=cursor)
+
+    def _sash_drag_start(self, _event) -> None:
+        """Pause detection while the sash is dragged.
+
+        The capture thread skips decoding (and starves OCR) whenever
+        ``pause_event`` is set, freeing CPU for the resize re-renders.
+        The preview keeps rendering its cached frame, so the resize
+        itself stays live. An explicit user Pause is respected: the
+        drag never resumes scanning on release.
+        """
+        self._sash_dragging = not self._paused
+        if self._sash_dragging:
+            self.pause_event.set()
+
+    def _sash_drag_end(self, _event) -> None:
+        """Resume detection after a sash drag (unless user-paused)."""
+        if self._sash_dragging:
+            self._sash_dragging = False
+            if not self._paused:
+                self.pause_event.clear()
 
     def _sash_drag(self, _event) -> None:
         """Resize column 0 (preview side) while the sash is dragged."""
