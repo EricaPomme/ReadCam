@@ -91,6 +91,11 @@ class ResultsPanel(ctk.CTkScrollableFrame):
         # Per-row child widgets, so updates don't rely on tree-walking.
         self._row_meta_labels: dict[tuple[str, str], ctk.CTkLabel] = {}
         self._row_bars: dict[tuple[str, str], ctk.CTkProgressBar] = {}
+        # Last displayed key order, so re-packing only happens when the
+        # sorted order actually changes (pack() on an already-managed
+        # widget moves it to the bottom, so packing in sorted order
+        # reorders the list).
+        self._displayed_order: list[tuple[str, str]] = []
 
     def update_results(self, results: list[Result]) -> None:
         """Refresh the list of results, adding, updating, and removing rows."""
@@ -119,12 +124,17 @@ class ResultsPanel(ctk.CTkScrollableFrame):
             else:
                 self._update_result_row(key, result, max_conf)
 
-        # Re-pack rows so the displayed order matches the sorted order.
-        # pack() on an already-managed widget moves it to the bottom, so
-        # packing in sorted order reorders the list.
-        for result in results:
-            widget = self._result_widgets[(result.type, result.value)]
-            widget.pack(fill="x", padx=10, pady=(0, 5))
+        # Re-pack rows so the displayed order matches the sorted order,
+        # but only when the order actually changed. pack() on an
+        # already-managed widget moves it to the bottom, so packing in
+        # sorted order reorders the list; skipping the loop when the
+        # order is unchanged avoids the per-refresh geometry churn.
+        new_order = [(r.type, r.value) for r in results]
+        if new_order != self._displayed_order:
+            for result in results:
+                widget = self._result_widgets[(result.type, result.value)]
+                widget.pack(fill="x", padx=10, pady=(0, 5))
+            self._displayed_order = new_order
 
         # Update header count
         self.header.configure(text=f"Results ({len(results)})")
