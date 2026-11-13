@@ -304,6 +304,7 @@ class OCRThread(threading.Thread):
         result_queue: queue.Queue,
         stop_event: threading.Event,
         pause_event: threading.Event,
+        roi_holder: Optional[dict] = None,
         ocr_interval_holder: Optional[dict] = None,
         debug: bool = False,
     ):
@@ -312,6 +313,8 @@ class OCRThread(threading.Thread):
         self.result_queue = result_queue
         self.stop_event = stop_event
         self.pause_event = pause_event
+        # Shared ROI (x, y, w, h) set by UI mouse selection, or None
+        self.roi_holder = roi_holder if roi_holder is not None else {"roi": None}
         # Shared with the capture thread, which applies our adaptive interval
         self.ocr_interval_holder = (
             ocr_interval_holder if ocr_interval_holder is not None
@@ -333,14 +336,27 @@ class OCRThread(threading.Thread):
         logger.info("OCR thread ready (Tesseract detected)")
 
         while not self.stop_event.is_set():
-            if self.pause_event.is_set():
-                time.sleep(0.1)
-                continue
+            # No pause check here: while paused the queue simply stays
+            # empty, and manual ROI selections should still be processed.
 
             try:
                 frame = self.ocr_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
+
+            # Crop to the manual selection region if one is active
+            roi = self.roi_holder.get("roi")
+            offset = (0, 0)
+            if roi is not None:
+                rx, ry, rw, rh = roi
+                fh, fw = frame.shape[:2]
+                x2, y2 = min(rx + rw, fw), min(ry + rh, fh)
+                x1, y1 = max(rx, 0), max(ry, 0)
+                if x2 - x1 < 5 or y2 - y1 < 5:
+                    continue
+                frame = frame[y1:y2, x1:x2]
+                offset = (x1, y1)
+                logger.debug("OCR using manual ROI %s", roi)
 
             start = time.perf_counter()
             try:
@@ -363,6 +379,13 @@ class OCRThread(threading.Thread):
                 )
 
             if detections:
+                # Shift ROI-relative boxes back into frame coordinates
+                if offset != (0, 0):
+                    ox, oy = offset
+                    for det in detections:
+                        if det.bbox:
+                            bx, by, bw, bh = det.bbox
+                            det.bbox = (bx + ox, by + oy, bw, bh)
                 for det in detections:
                     logger.info(
                         "ocr: %s %r (conf=%.2f, bbox=%s) [%.0f ms]",

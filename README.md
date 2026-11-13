@@ -9,6 +9,8 @@ Live camera scanner that detects QR codes, barcodes, and text in real time.
 - **QR codes** and **barcodes** (EAN, UPC, Code 128/39/93, PDF417, and more) via zbar
 - **Text / OCR** via Tesseract (detects text regions automatically using contour analysis)
 - Live camera preview with colour-coded bounding boxes
+- **Manual OCR region**: drag a box on the preview to OCR just that area
+  (persist until the next click; works while paused)
 - Results list with confidence tracking -- **click a result's badge to copy** its value
 - Pause/resume scanning (Space bar)
 - Automatic confidence decay -- stale results fade and disappear
@@ -100,6 +102,7 @@ pause/resume, and shutdown.
 | `Space` | Pause / resume scanning |
 | `Escape` | Quit |
 | `R` | Clear all results |
+| Drag on preview | Select manual OCR region (persists until next click) |
 
 ## User Interface
 

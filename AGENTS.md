@@ -54,6 +54,14 @@ Both `pyzbar` (QR/barcode) and `pytesseract` (OCR) are optional. The app detects
 ### Camera Discovery
 Probes indices 0-9 with `cv2.VideoCapture`. Tries `ffmpeg -list_devices` for friendly names; falls back to `Camera N`.
 
+### Manual OCR Region (ROI)
+Dragging on the preview sets a selection (frame coordinates) exposed via
+`PreviewPanel.selection`. The app syncs it into `roi_holder` each tick;
+the OCR thread crops frames to the ROI before decoding and offsets result
+boxes back into frame coordinates. Mouse-up triggers one immediate OCR
+pass. The OCR thread deliberately ignores the pause event: with capture
+paused the queue stays empty anyway, and manual selections must still OCR.
+
 ## CLI
 
 ```text

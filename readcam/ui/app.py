@@ -64,6 +64,8 @@ class ReadCamApp(ctk.CTk):
         self.ocr_result_queue: queue.Queue = queue.Queue()
         # Shared, mutable OCR interval (ms) -- OCR thread raises it adaptively
         self.ocr_interval_holder = {"ms": ocr_interval_ms}
+        # Shared manual ROI selection (x, y, w, h) or None
+        self.roi_holder = {"roi": None}
 
         # Thread control
         self.pause_event = threading.Event()
@@ -87,7 +89,10 @@ class ReadCamApp(ctk.CTk):
         self.results_manager = ResultsManager()
 
         # --- Build UI ---
-        self.preview_panel = PreviewPanel(self)
+        self.preview_panel = PreviewPanel(
+            self,
+            on_selection_end=self._request_ocr_now,
+        )
         self.preview_panel.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
 
         self.results_panel = ResultsPanel(self)
@@ -125,6 +130,7 @@ class ReadCamApp(ctk.CTk):
             result_queue=self.ocr_result_queue,
             stop_event=self.stop_event,
             pause_event=self.pause_event,
+            roi_holder=self.roi_holder,
             ocr_interval_holder=self.ocr_interval_holder,
             debug=debug,
         )
@@ -152,6 +158,9 @@ class ReadCamApp(ctk.CTk):
 
     def _update_loop(self) -> None:
         """Periodic update: poll queues, redraw preview, refresh results."""
+        # Keep the OCR thread's ROI in sync with the UI selection
+        self.roi_holder["roi"] = self.preview_panel.selection
+
         if not self._paused:
             # 1. Consume latest frame from capture thread
             try:
@@ -259,6 +268,17 @@ class ReadCamApp(ctk.CTk):
         count = self.results_manager.count
         self.results_manager.clear()
         logger.info("Cleared %d result(s)", count)
+
+    def _request_ocr_now(self) -> None:
+        """Run an immediate OCR pass on the latest frame (mouse-up on ROI)."""
+        frame = self.preview_panel.latest_frame
+        if frame is None:
+            return
+        try:
+            self.ocr_queue.put_nowait(frame.copy())
+            logger.info("Immediate OCR pass requested (manual selection)")
+        except queue.Full:
+            logger.debug("ocr_queue full; immediate OCR pass skipped")
 
     def _on_close(self) -> None:
         """Clean up threads and close the window."""
