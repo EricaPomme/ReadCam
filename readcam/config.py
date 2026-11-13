@@ -5,6 +5,8 @@
 DEFAULT_CAMERA_INDEX = 0
 DEFAULT_FRAME_INTERVAL = 50      # ms (~20 fps)
 DEFAULT_OCR_INTERVAL = 1500      # ms (run OCR every 1.5s)
+DEFAULT_ROTATION = 0             # display rotation in degrees (0/90/180/270)
+DEFAULT_FLIP = "none"            # display flip: none | h | v | hv
 
 # Preview
 # Fallback preview size used before the label has been measured; the

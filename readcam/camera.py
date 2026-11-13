@@ -166,6 +166,7 @@ class CaptureThread(threading.Thread):
         ocr_interval_holder: Optional[dict] = None,
         auto_holder: Optional[dict] = None,
         camera_index_holder: Optional[dict] = None,
+        transform_holder: Optional[dict] = None,
         debug: bool = False,
     ):
         super().__init__(name="capture", daemon=True)
@@ -188,6 +189,13 @@ class CaptureThread(threading.Thread):
         )
         # Shared auto-scan toggle; False disables zbar + OCR frame pushes
         self.auto_holder = auto_holder if auto_holder is not None else {"enabled": True}
+        # Shared display transform: rotation in degrees (0/90/180/270) and
+        # flip mode ("none"/"h"/"v"/"hv"). Applied to every frame before
+        # decoding so all boxes and the ROI selection stay consistent.
+        self.transform_holder = (
+            transform_holder if transform_holder is not None
+            else {"rotation": 0, "flip": "none"}
+        )
         self.debug = debug
 
         self._cap: Optional[cv2.VideoCapture] = None
@@ -281,6 +289,8 @@ class CaptureThread(threading.Thread):
                 time.sleep(0.05)
                 continue
             self._read_failures = 0
+
+            frame = self._apply_transform(frame)
 
             try:
                 # Fast decode: run zbar on the frame (auto mode only)
@@ -383,6 +393,28 @@ class CaptureThread(threading.Thread):
                 q.get_nowait()
         except queue.Empty:
             pass
+
+    def _apply_transform(self, frame: np.ndarray) -> np.ndarray:
+        """Apply the user's rotation / flip settings to *frame*.
+
+        Reads the shared transform holder on each frame (GIL-safe dict
+        reads) so the UI can change orientation live.
+        """
+        rotation = self.transform_holder.get("rotation", 0)
+        flip = self.transform_holder.get("flip", "none")
+        if rotation == 90:
+            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        elif rotation == 180:
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
+        elif rotation == 270:
+            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        if flip == "h":
+            frame = cv2.flip(frame, 1)
+        elif flip == "v":
+            frame = cv2.flip(frame, 0)
+        elif flip == "hv":
+            frame = cv2.flip(frame, -1)
+        return frame
 
     def _decode_zbar(self, frame: np.ndarray) -> list[ZBarResult]:
         """Run zbar barcode/QR decoding on the frame."""

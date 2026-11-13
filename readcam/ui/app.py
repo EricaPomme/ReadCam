@@ -24,8 +24,10 @@ threading.excepthook = _log_thread_exception
 
 from ..camera import CaptureThread, CameraDiscovery, OCRThread
 from ..config import (
+    DEFAULT_FLIP,
     DEFAULT_FRAME_INTERVAL,
     DEFAULT_OCR_INTERVAL,
+    DEFAULT_ROTATION,
     UI_MIN_HEIGHT,
     UI_MIN_WIDTH,
     UI_PREVIEW_MIN_WIDTH,
@@ -52,6 +54,8 @@ class ReadCamApp(ctk.CTk):
         ocr_interval_ms: int = DEFAULT_OCR_INTERVAL,
         frame_interval_ms: int = DEFAULT_FRAME_INTERVAL,
         no_auto: bool = False,
+        rotation: int = DEFAULT_ROTATION,
+        flip: str = DEFAULT_FLIP,
         debug: bool = False,
     ):
         setup_theme()
@@ -91,6 +95,8 @@ class ReadCamApp(ctk.CTk):
         self.filter_holder: dict = {}
         # Shared camera index; CaptureThread re-opens on change
         self.camera_index_holder: dict = {"index": camera_index}
+        # Shared display transform (rotation degrees / flip mode)
+        self.transform_holder: dict = {"rotation": rotation, "flip": flip}
 
         # Thread control
         self.pause_event = threading.Event()
@@ -145,6 +151,27 @@ class ReadCamApp(ctk.CTk):
             command=self._refresh_cameras,
         )
         self.camera_refresh_btn.grid(row=0, column=2, padx=(4, 0))
+
+        self.rotate_btn = ctk.CTkButton(
+            self.toolbar,
+            text=f"Rotate: {self.transform_holder['rotation']}\u00b0",
+            font=FONTS["small"],
+            width=90,
+            height=24,
+            command=self._on_rotate,
+        )
+        self.rotate_btn.grid(row=0, column=3, padx=(4, 0))
+
+        _flip_labels = {"none": "Off", "h": "H", "v": "V", "hv": "HV"}
+        self.flip_btn = ctk.CTkButton(
+            self.toolbar,
+            text=f"Flip: {_flip_labels.get(self.transform_holder['flip'], 'Off')}",
+            font=FONTS["small"],
+            width=90,
+            height=24,
+            command=self._on_flip,
+        )
+        self.flip_btn.grid(row=0, column=4, padx=(4, 0))
 
         self.preview_panel = PreviewPanel(
             self,
@@ -229,6 +256,7 @@ class ReadCamApp(ctk.CTk):
             ocr_interval_ms=ocr_interval_ms,
             ocr_interval_holder=self.ocr_interval_holder,
             auto_holder=self.auto_holder,
+            transform_holder=self.transform_holder,
             debug=debug,
         )
         self.capture_thread.start()
@@ -458,6 +486,40 @@ class ReadCamApp(ctk.CTk):
             else "Auto-scan disabled (manual-only mode)",
         )
         self._refresh_status_buttons()
+
+    # ------------------------------------------------------------------
+    # View transform (rotation / flip)
+    # ------------------------------------------------------------------
+
+    def _on_rotate(self) -> None:
+        """Cycle the view rotation: 0 -> 90 -> 180 -> 270 degrees."""
+        rotation = (self.transform_holder.get("rotation", 0) + 90) % 360
+        self.transform_holder["rotation"] = rotation
+        self.rotate_btn.configure(text=f"Rotate: {rotation}\u00b0")
+        logger.info("View rotation set to %d degrees", rotation)
+        self._on_transform_changed()
+
+    def _on_flip(self) -> None:
+        """Cycle the view flip mode: Off -> H -> V -> HV."""
+        modes = ["none", "h", "v", "hv"]
+        labels = {"none": "Off", "h": "H", "v": "V", "hv": "HV"}
+        current = self.transform_holder.get("flip", "none")
+        flip = modes[(modes.index(current) + 1) % len(modes)]
+        self.transform_holder["flip"] = flip
+        self.flip_btn.configure(text=f"Flip: {labels[flip]}")
+        logger.info("View flip set to %s", flip)
+        self._on_transform_changed()
+
+    def _on_transform_changed(self) -> None:
+        """View transform changed: drop stale results and selection.
+
+        Old bounding boxes and the manual ROI no longer match the new
+        frame geometry (same reasoning as a camera switch).
+        """
+        self._clear_results()
+        self.preview_panel.clear()
+        self._latest_frame = None
+        self._latest_zbar = []
 
     def _refresh_status_buttons(self) -> None:
         """Sync the status-bar toggle buttons with current state."""

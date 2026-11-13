@@ -4,7 +4,13 @@ import argparse
 import sys
 
 from .camera import CameraDiscovery
-from .config import DEFAULT_CAMERA_INDEX, DEFAULT_OCR_INTERVAL, DEFAULT_FRAME_INTERVAL
+from .config import (
+    DEFAULT_CAMERA_INDEX,
+    DEFAULT_FLIP,
+    DEFAULT_FRAME_INTERVAL,
+    DEFAULT_OCR_INTERVAL,
+    DEFAULT_ROTATION,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,6 +50,23 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Disable automatic scanning; only OCR/decode the manually "
             "selected region (drag on the preview)."
+        ),
+    )
+    scan.add_argument(
+        "--rotate",
+        type=int,
+        choices=[0, 90, 180, 270],
+        default=DEFAULT_ROTATION,
+        metavar="DEG",
+        help=f"Rotate the camera view (default: {DEFAULT_ROTATION}).",
+    )
+    scan.add_argument(
+        "--flip",
+        choices=["none", "h", "v", "hv"],
+        default=DEFAULT_FLIP,
+        help=(
+            "Flip the camera view: h (horizontal), v (vertical), "
+            "hv (both), or none (default: %s)." % DEFAULT_FLIP
         ),
     )
     scan.add_argument(
@@ -132,6 +155,8 @@ def entry_point() -> int:
             ocr_interval_ms=args.ocr_interval,
             frame_interval_ms=args.frame_interval,
             no_auto=args.no_auto,
+            rotation=args.rotate,
+            flip=args.flip,
             debug=args.debug,
         )
         app.run()
