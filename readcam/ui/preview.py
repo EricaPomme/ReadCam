@@ -46,6 +46,7 @@ class PreviewPanel(ctk.CTkFrame):
             self,
             text="No camera feed\n(drag to select an OCR region)",
             font=("Segoe UI", 16),
+            cursor="crosshair",
         )
         self.image_label.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -164,10 +165,14 @@ class PreviewPanel(ctk.CTkFrame):
 
         # Remember the mapping for mouse-coordinate conversion
         img_w, img_h = pil_image.size
-        self._render_scale = img_w / frame.shape[1]
-        label_w = max(self.image_label.winfo_width(), 1)
-        label_h = max(self.image_label.winfo_height(), 1)
-        self._render_offset = ((label_w - img_w) // 2, (label_h - img_h) // 2)
+        label_w = self.image_label.winfo_width()
+        label_h = self.image_label.winfo_height()
+
+        # Only trust the mapping once the widget is realised; a stale
+        # or zero size would produce a bogus offset.
+        if label_w > 10 and label_h > 10:
+            self._render_scale = img_w / frame.shape[1]
+            self._render_offset = ((label_w - img_w) // 2, (label_h - img_h) // 2)
 
     def _resize_to_fit(self, image: Image.Image) -> Image.Image:
         """Scale the image to fit the preview area while preserving aspect ratio."""

@@ -110,6 +110,13 @@ class ResultsPanel(ctk.CTkScrollableFrame):
             else:
                 self._update_result_row(self._result_widgets[key], result)
 
+        # Re-pack rows so the displayed order matches the sorted order.
+        # pack() on an already-managed widget moves it to the bottom, so
+        # packing in sorted order reorders the list.
+        for result in results:
+            widget = self._result_widgets[(result.type, result.value)]
+            widget.pack(fill="x", padx=10, pady=(0, 5))
+
         # Update header count
         self.header.configure(text=f"Results ({len(results)})")
 
