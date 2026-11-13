@@ -2,8 +2,6 @@
 
 Live camera scanner that detects QR codes, barcodes, and text in real time.
 
-![screenshot placeholder](https://img.shields.io/badge/status-alpha-yellow)
-
 ## Features
 
 - **QR codes** and **barcodes** (EAN, UPC, Code 128/39/93, PDF417, and more) via zbar
@@ -152,55 +150,6 @@ capture saves, pause/resume, and shutdown.
 | `Escape` | Quit |
 | `R` | Clear all results |
 | Drag on preview | Select manual OCR region (persists until next click) |
-
-## User Interface
-
-```
-+-----------------------------+---------------------------+
-|   Camera Preview            |   Results                 |
-|                             |                           |
-|   [QR: example.com]  [ ]   |   [QR] example.com        |
-|   +------------------+      |       seen 8x, 14s visible|
-|   |  QR code here    |      |                           |
-|   +------------------+      |   [TXT] Welcome to...     |
-|                             |       seen 3x, 5s visible |
-|                             |                           |
-|   [TXT: Welcome to...]      |                           |
-|   +------------------+      |   (click a badge to copy) |
-+-----------------------------+---------------------------+
-+---------------------------------------------------------+
-
-Colours:
-    Green  -- QR codes
-    Blue   -- Barcodes
-    Orange -- Text (OCR)
-```
-
-## Project Structure
-
-```
-readcam/
-  readcam/
-    __init__.py       # Version
-    __main__.py       # python -m readcam
-    cli.py            # Argument parsing
-    config.py         # Defaults and constants
-    capture.py        # Capture saving: PNG output, clipboard image
-    camera.py         # Camera discovery, CaptureThread, OCRThread
-    detector.py       # Text region detection via contours
-    results.py        # ResultsManager (dedup, confidence, decay)
-    util.py           # Clipboard, time formatting, truncation
-    decoders/
-      base.py         # Detection dataclass + Decoder ABC
-      zbar_decoder.py # QR / barcode via pyzbar
-      ocr_decoder.py  # Text via pytesseract
-    ui/
-      theme.py        # CTk colours and fonts
-      app.py          # Main application window
-      preview.py      # Camera preview + overlay painting
-      capture_panel.py # Capture saving panel
-      results_panel.py # Scrollable results list
-```
 
 ## Development
 
