@@ -92,7 +92,7 @@ class CapturePanel(ctk.CTkFrame):
         self.columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
-            self, text="\U0001F4BE", font=FONTS["body"],  # Floppy disk
+            self, text="\U0001F4BE", font=("Segoe UI Emoji", 20),  # Floppy disk
         ).grid(row=0, column=0, padx=(8, 4), pady=6, sticky="w")
 
         # The path label doubles as the Select button: clicking it opens
@@ -126,7 +126,7 @@ class CapturePanel(ctk.CTkFrame):
             self.clip_btn.configure(state="disabled")
 
         self.bb_check = ctk.CTkCheckBox(
-            self, text="BB", font=FONTS["small"],
+            self, text="\U0001F5D7", font=("Segoe UI Emoji", 17),
             variable=self.include_boxes, width=50,
         )
         self.bb_check.grid(row=0, column=4, padx=(4, 8), pady=6)
