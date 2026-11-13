@@ -53,6 +53,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     scan.add_argument(
+        "--no-ocr",
+        action="store_true",
+        help=(
+            "Bypass text OCR entirely (barcodes-only mode); QR/barcode "
+            "decoding keeps running, saving CPU."
+        ),
+    )
+    scan.add_argument(
         "--rotate",
         type=int,
         choices=[0, 90, 180, 270],
@@ -155,6 +163,7 @@ def entry_point() -> int:
             ocr_interval_ms=args.ocr_interval,
             frame_interval_ms=args.frame_interval,
             no_auto=args.no_auto,
+            no_ocr=args.no_ocr,
             rotation=args.rotate,
             flip=args.flip,
             debug=args.debug,

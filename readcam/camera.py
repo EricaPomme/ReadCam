@@ -12,7 +12,7 @@ import sys
 
 import cv2
 
-from .config import OCR_ADAPTIVE_HEADROOM, RESOLUTION_AUTO
+from .config import OCR_ADAPTIVE_HEADROOM, OCR_ENABLED, RESOLUTION_AUTO
 from .decoders.ocr_decoder import OCRDecoder
 from .decoders.zbar_decoder import ZBarDecoder
 from .decoders.zxing_decoder import ZXingDecoder
@@ -170,6 +170,7 @@ class CaptureThread(threading.Thread):
         ocr_interval_holder: Optional[dict] = None,
         auto_holder: Optional[dict] = None,
         camera_index_holder: Optional[dict] = None,
+        ocr_holder: Optional[dict] = None,
         transform_holder: Optional[dict] = None,
         filter_holder: Optional[dict] = None,
         debug: bool = False,
@@ -194,6 +195,13 @@ class CaptureThread(threading.Thread):
         )
         # Shared auto-scan toggle; False disables zbar + OCR frame pushes
         self.auto_holder = auto_holder if auto_holder is not None else {"enabled": True}
+        # Shared OCR toggle; False skips pushing frames to the OCR
+        # pipeline (barcodes-only mode). Barcode decoders in the OCR
+        # thread stay active for manual ROI passes.
+        self.ocr_holder = (
+            ocr_holder if ocr_holder is not None
+            else {"enabled": OCR_ENABLED}
+        )
         # Shared display transform: rotation in degrees (0/90/180/270) and
         # flip mode ("none"/"h"/"v"/"hv"). Applied to every frame before
         # decoding so all boxes and the ROI selection stay consistent.
@@ -334,7 +342,10 @@ class CaptureThread(threading.Thread):
             # user's colour-mode / adjustments are display choices and
             # should not degrade Tesseract quality (OCR does its own
             # preprocessing). Same dimensions, so ROI boxes stay valid.
-            ocr_frame = frame.copy()
+            # Skipped entirely in barcodes-only mode (the copy is wasted
+            # when nothing consumes it).
+            ocr_enabled = self.ocr_holder.get("enabled", OCR_ENABLED)
+            ocr_frame = frame.copy() if ocr_enabled else None
 
             # Apply colour mode + image adjustments for display and
             # zbar decoding (1-bit B/W generally helps zbar detection).
@@ -362,7 +373,11 @@ class CaptureThread(threading.Thread):
 
                 # Periodically push a frame to the OCR pipeline (auto mode)
                 now = time.time()
-                if self.auto_holder.get("enabled") and now - self._last_ocr_time >= self.ocr_interval:
+                if (
+                    self.auto_holder.get("enabled")
+                    and ocr_enabled
+                    and now - self._last_ocr_time >= self.ocr_interval
+                ):
                     self._last_ocr_time = now
                     # Pick up adaptive interval updates from the OCR thread
                     adaptive_ms = self.ocr_interval_holder.get("ms")
@@ -588,6 +603,7 @@ class OCRThread(threading.Thread):
         roi_holder: Optional[dict] = None,
         ocr_interval_holder: Optional[dict] = None,
         auto_holder: Optional[dict] = None,
+        ocr_holder: Optional[dict] = None,
         filter_holder: Optional[dict] = None,
         debug: bool = False,
     ):
@@ -600,6 +616,12 @@ class OCRThread(threading.Thread):
         self.roi_holder = roi_holder if roi_holder is not None else {"roi": None}
         # Shared auto-scan toggle; False drops whole-frame OCR jobs
         self.auto_holder = auto_holder if auto_holder is not None else {"enabled": True}
+        # Shared OCR bypass toggle; False skips Tesseract decoding
+        # (barcodes-only mode) while zxing/zbar keep running below
+        self.ocr_holder = (
+            ocr_holder if ocr_holder is not None
+            else {"enabled": OCR_ENABLED}
+        )
         # Shared live filter thresholds written by the UI sliders
         self.filter_holder = (
             filter_holder if filter_holder is not None else {}
@@ -663,8 +685,12 @@ class OCRThread(threading.Thread):
             start = time.perf_counter()
             detections: list = []
             try:
-                if self._decoder.available:
+                if self._decoder.available and self.ocr_holder.get(
+                    "enabled", OCR_ENABLED,
+                ):
                     detections = self._decoder.decode(frame)
+                elif not self.ocr_holder.get("enabled", OCR_ENABLED):
+                    logger.debug("OCR bypassed (barcodes-only mode)")
             except Exception as exc:
                 logger.debug("OCR processing error: %s", exc)
 

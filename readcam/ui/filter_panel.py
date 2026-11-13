@@ -1,9 +1,9 @@
 """Panel of live filter tuning below the preview, split into two cells.
 
-Left cell: OCR thresholds (text confidence, length, hit counts,
-result decay/removal). Right cell: image adjustments (resolution,
-colour mode, contrast, saturation, sharpness) consumed by the
-capture thread's ``ImageEnhancer``.
+Left cell: OCR enable toggle + thresholds (text confidence, length, hit
+counts, result decay/removal). Right cell: image adjustments
+(resolution, colour mode, contrast, saturation, sharpness) consumed by
+the capture thread's ``ImageEnhancer``.
 """
 
 import logging
@@ -20,6 +20,7 @@ from ..config import (
     IMAGE_SATURATION,
     IMAGE_SHARPNESS,
     OCR_DENOISE,
+    OCR_ENABLED,
     RESOLUTIONS,
     TEXT_MIN_ALNUM_RATIO,
     TEXT_MIN_CONFIDENCE,
@@ -87,6 +88,7 @@ class FilterPanel(ctk.CTkFrame):
         self,
         master,
         filters: dict,
+        ocr_holder: Optional[dict] = None,
         on_change_end: Optional[Callable] = None,
         **kwargs,
     ):
@@ -94,6 +96,12 @@ class FilterPanel(ctk.CTkFrame):
         self.configure(fg_color=COLOURS["card_bg"])
 
         self._filters = filters
+        # Shared OCR bypass toggle; None falls back to the filter holder
+        # (single-dict apps) with the config default.
+        self._ocr_holder = (
+            ocr_holder if ocr_holder is not None
+            else {"enabled": OCR_ENABLED}
+        )
         self.on_change_end = on_change_end
         self._sliders: dict[str, ctk.CTkSlider] = {}
         self._labels: dict[str, ctk.CTkLabel] = {}
@@ -144,6 +152,7 @@ class FilterPanel(ctk.CTkFrame):
             ocr_cell, text="OCR", font=FONTS["small"],
             anchor="w",
         ).pack(fill="x", pady=(0, 2))
+        self._build_ocr_toggle(ocr_cell)
         for spec in _OCR_SLIDERS:
             self._build_slider(spec, ocr_cell)
 
@@ -155,8 +164,44 @@ class FilterPanel(ctk.CTkFrame):
             self._build_dropdown(spec, image_cell)
         for spec in _IMAGE_SLIDERS:
             self._build_slider(spec, image_cell)
+
+    def _build_ocr_toggle(self, cell: ctk.CTkFrame) -> None:
+        """Add the top OCR-cell row: enable checkbox (barcodes-only
+        bypass) + denoise checkbox side by side.
+
+        The enable toggle writes into the shared ``ocr_holder`` (not the
+        filter holder) so both background threads see it live; no
+        restart needed. The denoise checkbox uses the standard
+        ``_CHECKBOXES`` path so seeding/reset keep working.
+        """
+        row = ctk.CTkFrame(cell, fg_color="transparent")
+        row.pack(fill="x", pady=2)
+        row.columnconfigure(0, weight=1)
+        row.columnconfigure(1, weight=1)
+
+        enabled = self._ocr_holder.get("enabled", OCR_ENABLED)
+        box = ctk.CTkCheckBox(
+            row,
+            text="Enable OCR",
+            font=FONTS["small"],
+            command=self._on_ocr_toggle,
+        )
+        if enabled:
+            box.select()
+        else:
+            box.deselect()
+        box.grid(row=0, column=0, sticky="w")
+        self._ocr_checkbox = box
+
+        # OCR denoise shares the row (moved from the Image cell)
         for spec in _CHECKBOXES:
-            self._build_checkbox(spec, image_cell)
+            self._build_checkbox(spec, row, grid_column=1)
+
+    def _on_ocr_toggle(self) -> None:
+        """Write the OCR toggle state into the shared holder."""
+        enabled = bool(self._ocr_checkbox.get())
+        self._ocr_holder["enabled"] = enabled
+        logger.info("OCR toggled %s", "on" if enabled else "off (barcodes-only)")
 
     # ------------------------------------------------------------------
     # Layout
@@ -217,8 +262,14 @@ class FilterPanel(ctk.CTkFrame):
 
         self._menus[key] = menu
 
-    def _build_checkbox(self, spec: tuple, cell: ctk.CTkFrame) -> None:
-        """Add a checkbox row for one boolean toggle."""
+    def _build_checkbox(
+        self, spec: tuple, cell: ctk.CTkFrame, grid_column: int = -1,
+    ) -> None:
+        """Add a checkbox row for one boolean toggle.
+
+        With *grid_column* >= 0 the checkbox is gridded into that
+        column of *cell* instead of packed (side-by-side rows).
+        """
         key, label, default = spec
 
         box = ctk.CTkCheckBox(
@@ -231,7 +282,10 @@ class FilterPanel(ctk.CTkFrame):
             box.select()
         else:
             box.deselect()
-        box.pack(fill="x", pady=2)
+        if grid_column >= 0:
+            box.grid(row=0, column=grid_column, sticky="w")
+        else:
+            box.pack(fill="x", pady=2)
 
         self._checkboxes[key] = box
 

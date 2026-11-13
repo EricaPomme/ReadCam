@@ -31,6 +31,7 @@ TEXT_MIN_ALNUM_RATIO = 0.6      # fraction of chars that must be alphanumeric
 TEXT_MIN_LETTERS = 3            # min alphabetic characters in a result
 
 # OCR performance
+OCR_ENABLED = True              # False = barcodes-only mode (skip Tesseract)
 OCR_MAX_WIDTH = 1000            # downscale frames wider than this before OCR
 OCR_ADAPTIVE_HEADROOM = 1.25    # adaptive interval = OCR duration x this
 

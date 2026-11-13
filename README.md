@@ -119,6 +119,19 @@ until you drag a selection box on the preview. The status bar shows a
 toggle buttons, so the mode can be switched at any time while running.
 Dragging still triggers an immediate OCR pass on mouse-up.
 
+### Barcodes-only mode (OCR bypass)
+
+```bash
+# Skip text OCR entirely; QR/barcode decoding keeps running
+readcam --no-ocr
+```
+
+This skips the Tesseract pipeline (contour detection + text decode) to
+save CPU -- useful when you only care about QR codes and barcodes.
+Zbar/zxing still decode on every frame. OCR can also be toggled live
+with the **Enable OCR (text)** checkbox in the Filters panel; the status
+bar shows `OCR off` while bypassed.
+
 ### Capture saving
 
 The panel below the preview saves or copies the current frame:

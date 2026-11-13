@@ -58,6 +58,7 @@ class ReadCamApp(ctk.CTk):
         ocr_interval_ms: int = DEFAULT_OCR_INTERVAL,
         frame_interval_ms: int = DEFAULT_FRAME_INTERVAL,
         no_auto: bool = False,
+        no_ocr: bool = False,
         rotation: int = DEFAULT_ROTATION,
         flip: str = DEFAULT_FLIP,
         debug: bool = False,
@@ -98,6 +99,8 @@ class ReadCamApp(ctk.CTk):
         self.roi_holder = {"roi": None}
         # Shared auto-scan toggle (False with --no-auto)
         self.auto_holder = {"enabled": not no_auto}
+        # Shared OCR bypass toggle (False with --no-ocr; barcodes only)
+        self.ocr_holder = {"enabled": not no_ocr}
         # Shared live filter thresholds written by the sliders
         self.filter_holder: dict = {}
         # Shared camera index; CaptureThread re-opens on change
@@ -199,6 +202,7 @@ class ReadCamApp(ctk.CTk):
         self.filter_panel = FilterPanel(
             self,
             filters=self.filter_holder,
+            ocr_holder=self.ocr_holder,
             on_change_end=self._on_filters_changed,
         )
         self.filter_panel.grid(row=3, column=0, padx=5, pady=(0, 5), sticky="ew")
@@ -273,6 +277,7 @@ class ReadCamApp(ctk.CTk):
             ocr_interval_ms=ocr_interval_ms,
             ocr_interval_holder=self.ocr_interval_holder,
             auto_holder=self.auto_holder,
+            ocr_holder=self.ocr_holder,
             transform_holder=self.transform_holder,
             filter_holder=self.filter_holder,
             debug=debug,
@@ -287,6 +292,7 @@ class ReadCamApp(ctk.CTk):
             roi_holder=self.roi_holder,
             ocr_interval_holder=self.ocr_interval_holder,
             auto_holder=self.auto_holder,
+            ocr_holder=self.ocr_holder,
             filter_holder=self.filter_holder,
             debug=debug,
         )
@@ -473,7 +479,9 @@ class ReadCamApp(ctk.CTk):
 
         if not self._zbar_available:
             parts.append("zbar unavailable")
-        if not self._ocr_available:
+        if not self.ocr_holder.get("enabled"):
+            parts.append("OCR off")
+        elif not self._ocr_available:
             parts.append("OCR unavailable")
 
         self.status_label.configure(

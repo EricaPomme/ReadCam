@@ -75,7 +75,7 @@ paused the queue stays empty anyway, and manual selections must still OCR.
 ```text
 readcam [--list-cameras] [--camera INDEX] [--ocr-interval MS]
         [--frame-interval MS] [--rotate DEG] [--flip none|h|v|hv]
-        [--debug]
+        [--no-auto] [--no-ocr] [--debug]
 ```
 
 ## Keyboard Shortcuts
