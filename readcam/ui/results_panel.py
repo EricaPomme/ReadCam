@@ -4,7 +4,6 @@ import logging
 
 import customtkinter as ctk
 
-from ..config import CONFIDENCE_MAX
 from ..results import Result
 from ..util import copy_to_clipboard, format_relative_time, truncate
 from .theme import COLOURS, FONTS
@@ -89,26 +88,36 @@ class ResultsPanel(ctk.CTkScrollableFrame):
         self.header.pack(fill="x", padx=15, pady=(10, 5))
 
         self._result_widgets: dict[tuple[str, str], ctk.CTkFrame] = {}
+        # Per-row child widgets, so updates don't rely on tree-walking.
+        self._row_meta_labels: dict[tuple[str, str], ctk.CTkLabel] = {}
+        self._row_bars: dict[tuple[str, str], ctk.CTkProgressBar] = {}
 
     def update_results(self, results: list[Result]) -> None:
         """Refresh the list of results, adding, updating, and removing rows."""
         current_keys = {(r.type, r.value) for r in results}
 
+        # Bars are normalised dynamically against the strongest current
+        # result, so the bar ranks results within the live set rather than
+        # saturating at CONFIDENCE_MAX for everything long-lived.
+        max_conf = max((r.confidence for r in results), default=1.0)
+
         # Remove stale widgets
         for key in list(self._result_widgets.keys()):
             if key not in current_keys:
                 widget = self._result_widgets.pop(key)
+                self._row_meta_labels.pop(key, None)
+                self._row_bars.pop(key, None)
                 widget.destroy()
 
         # Add or update rows
         for result in results:
             key = (result.type, result.value)
             if key not in self._result_widgets:
-                widget = self._build_result_row(result)
+                widget = self._build_result_row(result, max_conf)
                 self._result_widgets[key] = widget
                 widget.pack(fill="x", padx=10, pady=(0, 5))
             else:
-                self._update_result_row(self._result_widgets[key], result)
+                self._update_result_row(key, result, max_conf)
 
         # Re-pack rows so the displayed order matches the sorted order.
         # pack() on an already-managed widget moves it to the bottom, so
@@ -120,7 +129,7 @@ class ResultsPanel(ctk.CTkScrollableFrame):
         # Update header count
         self.header.configure(text=f"Results ({len(results)})")
 
-    def _build_result_row(self, result: Result) -> ctk.CTkFrame:
+    def _build_result_row(self, result: Result, max_conf: float) -> ctk.CTkFrame:
         """Create a new row widget for a single result."""
         row = ctk.CTkFrame(self, fg_color=COLOURS["card_bg"], corner_radius=8)
 
@@ -166,34 +175,29 @@ class ResultsPanel(ctk.CTkScrollableFrame):
             text_color="#888888",
         )
         meta_label.pack(fill="x", anchor="w", pady=(2, 0))
+        self._row_meta_labels[(result.type, result.value)] = meta_label
 
-        confidence_pct = min(result.confidence / CONFIDENCE_MAX, 1.0)
+        confidence_pct = self._confidence_pct(result, max_conf)
         progress = ctk.CTkProgressBar(
             content_frame,
-            width=100,
             height=8,
             border_width=0,
         )
         progress.set(confidence_pct)
-        progress.pack(anchor="w", pady=(2, 0))
+        progress.pack(fill="x", pady=(2, 0))
+        self._row_bars[(result.type, result.value)] = progress
 
         return row
 
-    def _update_result_row(self, row: ctk.CTkFrame, result: Result) -> None:
+    def _update_result_row(self, key: tuple[str, str], result: Result, max_conf: float) -> None:
         """Update metadata in an existing row without rebuilding it."""
-        confidence_pct = min(result.confidence / CONFIDENCE_MAX, 1.0)
-        new_meta = ResultRowMeta.format_meta(result)
-        for child in row.winfo_children():
-            if isinstance(child, ctk.CTkProgressBar):
-                child.set(confidence_pct)
-            elif isinstance(child, ctk.CTkFrame) and child.grid_info().get("column") in (None, 1):
-                # content frame -- find the meta label
-                for subchild in child.winfo_children():
-                    if isinstance(subchild, ctk.CTkLabel):
-                        txt = subchild.cget("text")
-                        if "\u00b7" in txt:  # contains the middle-dot separator
-                            subchild.configure(text=new_meta)
-                            break
+        self._row_bars[key].set(self._confidence_pct(result, max_conf))
+        self._row_meta_labels[key].configure(text=ResultRowMeta.format_meta(result))
+
+    @staticmethod
+    def _confidence_pct(result: Result, max_conf: float) -> float:
+        """Normalise a result's confidence relative to the strongest current result."""
+        return min(result.confidence / max(max_conf, 1.0), 1.0)
 
     @staticmethod
     def _on_copy(value: str) -> None:
