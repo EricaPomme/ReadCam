@@ -41,7 +41,7 @@ Dark mode, green accent. Bounding boxes drawn with OpenCV on the frame before PI
 - **Decay**: confidence drops by ~1 per 2 seconds once unseen for 5 s.
 - **Removal**: purged entirely after 30 s of no sightings.
 - **Text threshold**: OCR text requires 3 detections before it appears (reduces false positives).
-- **Live filter sliders**: a Filters panel below the preview (always visible) adjusts the text thresholds and decay/removal delays at runtime via a shared `filter_holder` dict; consumers fall back to config defaults for missing keys.
+- **Live filter sliders**: a Filters panel below the preview (always visible) is split into two cells: OCR (text thresholds and decay/removal delays) and Image (resolution dropdown, colour mode dropdown, contrast/saturation/median-blur/sharpness sliders, and an OCR denoise checkbox). All controls write into a shared `filter_holder` dict; consumers fall back to config defaults for missing keys. Image adjustments are applied in the capture thread by `ImageEnhancer` (colour mode -> saturation -> contrast -> median blur -> sharpness); zbar decodes the enhanced frame, OCR receives the original frame so display colour modes never degrade OCR quality. The OCR denoise toggle applies an edge-preserving bilateral filter inside `OCRDecoder` (affordable there since OCR runs every ~1.5 s). Resolution changes re-open the camera under `_camera_op_lock`.
 
 ### Bounding Box Colours
 - Green: QR codes
