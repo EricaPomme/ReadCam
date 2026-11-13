@@ -338,18 +338,22 @@ class CaptureThread(threading.Thread):
 
             frame = self._apply_transform(frame)
 
+            # Apply zoom + colour mode + image adjustments for display
+            # and zbar decoding (1-bit B/W generally helps zbar
+            # detection). Zoom is geometric, so it is applied before the
+            # OCR copy below: OCR, ROI selection and bounding boxes all
+            # see the same zoomed geometry as the preview.
+            frame = self._enhancer.apply(frame)
+
             # Keep a copy of the raw frame for the OCR pipeline: the
             # user's colour-mode / adjustments are display choices and
             # should not degrade Tesseract quality (OCR does its own
-            # preprocessing). Same dimensions, so ROI boxes stay valid.
-            # Skipped entirely in barcodes-only mode (the copy is wasted
-            # when nothing consumes it).
+            # preprocessing), but the zoomed geometry is shared. Same
+            # dimensions, so ROI boxes stay valid. Skipped entirely in
+            # barcodes-only mode (the copy is wasted when nothing
+            # consumes it).
             ocr_enabled = self.ocr_holder.get("enabled", OCR_ENABLED)
             ocr_frame = frame.copy() if ocr_enabled else None
-
-            # Apply colour mode + image adjustments for display and
-            # zbar decoding (1-bit B/W generally helps zbar detection).
-            frame = self._enhancer.apply(frame)
 
             try:
                 # Fast decode: run zbar on the frame (auto mode only)

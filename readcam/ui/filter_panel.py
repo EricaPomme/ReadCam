@@ -2,8 +2,8 @@
 
 Left cell: OCR enable toggle + thresholds (text confidence, length, hit
 counts, result decay/removal). Right cell: image adjustments
-(resolution, colour mode, contrast, saturation, sharpness) consumed by
-the capture thread's ``ImageEnhancer``.
+(resolution, colour mode, zoom, contrast, saturation, sharpness)
+consumed by the capture thread's ``ImageEnhancer``.
 """
 
 import logging
@@ -19,6 +19,7 @@ from ..config import (
     IMAGE_MEDIAN_BLUR,
     IMAGE_SATURATION,
     IMAGE_SHARPNESS,
+    IMAGE_ZOOM,
     OCR_DENOISE,
     OCR_ENABLED,
     RESOLUTIONS,
@@ -52,6 +53,8 @@ _OCR_SLIDERS = [
 
 # Image adjustment slider specs (same shape as _OCR_SLIDERS)
 _IMAGE_SLIDERS = [
+    ("zoom", "Zoom", 1.0, 5.0, 40,
+     IMAGE_ZOOM, lambda v: f"{v:.2f}x"),
     ("contrast", "Contrast", 0.5, 2.0, 15,
      IMAGE_CONTRAST, lambda v: f"{v:.2f}"),
     ("saturation", "Saturation", 0.0, 2.0, 20,

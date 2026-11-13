@@ -41,6 +41,7 @@ IMAGE_SATURATION = 1.0      # S-channel multiplier (1.0 = neutral)
 IMAGE_SHARPNESS = 0.0       # unsharp-mask amount (0 = off)
 IMAGE_UNSHARP_SIGMA = 2.0   # Gaussian blur sigma for the unsharp mask
 IMAGE_MEDIAN_BLUR = 0       # 0 = off, else N -> median kernel (2N+1)
+IMAGE_ZOOM = 1.0            # digital zoom factor (1.0 = off, centre crop)
 
 # OCR pipeline denoise: edge-preserving bilateral filter applied to the
 # OCR frame only (runs every ~1.5 s, so the heavy cost is free)

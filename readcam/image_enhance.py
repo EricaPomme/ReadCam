@@ -1,10 +1,10 @@
 """Live image adjustments driven by the shared filter holder.
 
-The :class:`ImageEnhancer` applies the user's colour-mode and
-adjustment sliders (contrast, saturation, median blur, sharpness) to
-a BGR frame in the capture thread. Each stage is skipped when set to
-its neutral value so the per-frame cost stays near zero when the
-user has not touched anything.
+The :class:`ImageEnhancer` applies the user's zoom (digital centre
+crop), colour-mode and adjustment sliders (contrast, saturation,
+median blur, sharpness) to a BGR frame in the capture thread. Each
+stage is skipped when set to its neutral value so the per-frame cost
+stays near zero when the user has not touched anything.
 """
 
 import logging
@@ -21,6 +21,7 @@ from .config import (
     IMAGE_SATURATION,
     IMAGE_SHARPNESS,
     IMAGE_UNSHARP_SIGMA,
+    IMAGE_ZOOM,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,8 +31,9 @@ class ImageEnhancer:
     """Apply filter-holder image adjustments to a BGR frame.
 
     *filters* is the shared ``filter_holder`` dict written by the
-    Filters panel. Missing keys fall back to the config defaults, so
-    the enhancer is safe to use before the panel has been built.
+    Filters panel (zoom, colour mode, contrast, saturation, median
+    blur, sharpness). Missing keys fall back to the config defaults,
+    so the enhancer is safe to use before the panel has been built.
     """
 
     def __init__(self, filters: dict):
@@ -40,6 +42,22 @@ class ImageEnhancer:
     def apply(self, frame: np.ndarray) -> np.ndarray:
         """Return the adjusted frame; *frame* is not modified."""
         filters = self._filters
+
+        # 0. Digital zoom: centre-crop to 1/zoom then resize back to
+        # the original size so every consumer (preview, zbar, OCR,
+        # captures) sees identical geometry and coordinates. Skipped
+        # at 1.0x so the default per-frame cost stays zero.
+        zoom = float(filters.get("zoom", IMAGE_ZOOM))
+        if zoom > 1.001:
+            height, width = frame.shape[:2]
+            crop_w = max(1, int(round(width / zoom)))
+            crop_h = max(1, int(round(height / zoom)))
+            x0 = (width - crop_w) // 2
+            y0 = (height - crop_h) // 2
+            frame = frame[y0:y0 + crop_h, x0:x0 + crop_w]
+            frame = cv2.resize(
+                frame, (width, height), interpolation=cv2.INTER_LINEAR,
+            )
 
         # 1. Colour mode: display-only conversion. Greyscale and
         # 1-bit modes are folded back to 3 channels so overlays and
