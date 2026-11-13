@@ -26,7 +26,8 @@ These must be installed separately -- they are **not** pip-installable:
 | **zbar**  | `winget install zbar`            | `brew install zbar` / `apt install zbar-tools` |
 | **Tesseract** | `winget install tesseract`   | `brew install tesseract` / `apt install tesseract-ocr` |
 
-**Note:** zbar is optional (required only for QR/barcode decoding).  
+**Note:** zbar is optional (QR/barcode decoding; Data Matrix is handled
+by `zxing-cpp`, which installs via pip with no system dependencies).  
 Tesseract is optional (required only for OCR / text detection).  
 The app will work with just OpenCV if neither is installed -- it just won't detect anything.
 

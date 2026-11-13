@@ -4,3 +4,4 @@ pillow>=10
 pyzbar>=0.1
 pytesseract>=0.3
 pyperclip>=1.8
+zxing-cpp>=2.2

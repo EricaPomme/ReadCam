@@ -14,6 +14,8 @@ import cv2
 
 from .config import OCR_ADAPTIVE_HEADROOM
 from .decoders.ocr_decoder import OCRDecoder
+from .decoders.zbar_decoder import ZBarDecoder
+from .decoders.zxing_decoder import ZXingDecoder
 
 logger = logging.getLogger(__name__)
 
@@ -338,12 +340,21 @@ class OCRThread(threading.Thread):
         """Main OCR processing loop."""
         logger.info("OCR thread starting...")
         self._decoder = OCRDecoder(debug=self.debug)
+        self._zxing = ZXingDecoder(debug=self.debug)
+        self._zbar = ZBarDecoder(debug=self.debug)
+
+        logger.info(
+            "OCR thread decoders: Tesseract=%s, zxing=%s, zbar=%s",
+            self._decoder.available, self._zxing.available, self._zbar.available,
+        )
 
         if not self._decoder.available:
-            logger.warning("Tesseract unavailable; OCR disabled")
-            return
-
-        logger.info("OCR thread ready (Tesseract detected)")
+            logger.warning("Tesseract unavailable; text OCR disabled")
+            # Keep running: barcode decoders still operate in this thread
+            if not (self._zxing.available or self._zbar.available):
+                return
+        else:
+            logger.info("OCR thread ready (Tesseract detected)")
 
         while not self.stop_event.is_set():
             # No pause check here: while paused the queue simply stays
@@ -373,21 +384,35 @@ class OCRThread(threading.Thread):
                 logger.debug("OCR using manual ROI %s", roi)
 
             start = time.perf_counter()
+            detections: list = []
             try:
-                detections = self._decoder.decode(frame)
+                if self._decoder.available:
+                    detections = self._decoder.decode(frame)
             except Exception as exc:
                 logger.debug("OCR processing error: %s", exc)
-                continue
+
+            # Barcode/QR/DataMatrix decode also runs in this thread:
+            # full frame in auto mode, cropped region in manual mode.
+            # zxing-cpp picks up Data Matrix codes that zbar misses.
+            for barcode_decoder in (self._zxing, self._zbar):
+                if not barcode_decoder.available:
+                    continue
+                try:
+                    detections.extend(barcode_decoder.decode(frame))
+                except Exception as exc:
+                    logger.debug(
+                        "%s decode error: %s", type(barcode_decoder).__name__, exc,
+                    )
             elapsed_ms = (time.perf_counter() - start) * 1000
 
-            # Adaptive throttle: if OCR took longer than the current
+            # Adaptive throttle: if the pass took longer than the current
             # interval, raise the interval so capture FPS stays healthy.
             current_ms = self.ocr_interval_holder.get("ms", 1500)
             if elapsed_ms * OCR_ADAPTIVE_HEADROOM > current_ms:
                 adaptive_ms = int(elapsed_ms * OCR_ADAPTIVE_HEADROOM)
                 self.ocr_interval_holder["ms"] = adaptive_ms
                 logger.info(
-                    "OCR took %.0f ms (> %.0f ms interval); "
+                    "OCR pass took %.0f ms (> %.0f ms interval); "
                     "raising OCR interval to %d ms",
                     elapsed_ms, current_ms, adaptive_ms,
                 )
