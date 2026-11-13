@@ -52,7 +52,8 @@ pip install -e .
 ## Usage
 
 ```text
-readcam [--list-cameras] [--camera INDEX] [--ocr-interval MS] [--frame-interval MS] [--verbose]
+readcam [--list-cameras] [--camera INDEX] [--ocr-interval MS] [--frame-interval MS]
+        [--rotate DEG] [--flip none|h|v|hv] [--verbose]
 ```
 
 ### List available cameras
@@ -83,6 +84,20 @@ readcam --camera 0
 # Process OCR every 2 seconds (default 1.5s), capture every 33 ms (~30 fps)
 readcam --ocr-interval 2000 --frame-interval 33
 ```
+
+### Rotate / flip the camera view
+
+```bash
+# Rotate the view 90 degrees clockwise and mirror horizontally
+readcam --rotate 90 --flip h
+```
+
+`--rotate` accepts 0, 90, 180, or 270 (degrees, clockwise). `--flip`
+accepts `none`, `h` (horizontal), `v` (vertical), or `hv` (both). The
+orientation can also be changed at any time while running with the
+**Rotate** and **Flip** buttons in the toolbar; the transform applies
+before decoding, so bounding boxes, OCR results, and the manual ROI
+selection stay consistent.
 
 ### Verbose event logging
 
