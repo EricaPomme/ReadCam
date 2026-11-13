@@ -58,7 +58,7 @@ Dark mode, green accent. Bounding boxes drawn with OpenCV on the frame before PI
 Both `pyzbar` (QR/barcode) and `pytesseract` (OCR) are optional. The app detects their absence at startup and shows status in the status bar. No crashes if missing.
 
 ### Camera Discovery
-Startup is lazy and instant: the dropdown lists candidate indices 0-9 (`Camera N`) without touching any device. Friendly names are resolved in the capture thread once a camera opens (via `ffmpeg -list_devices`, fallback `Camera N`) and folded into the dropdown by the UI. The **Refresh** button runs a full probe (`CameraDiscovery.list_cameras`, opens each device) in a background thread.
+Startup is lazy and instant: the dropdown lists candidate indices 0-9 (`Camera N`) without touching any device. Friendly names are resolved in the capture thread once a camera opens (via `ffmpeg -list_devices`, fallback `Camera N`) and folded into the dropdown by the UI. The **Refresh** button runs a full probe (`CameraDiscovery.list_cameras`, opens each device) in a background thread. Once a friendly name is known, the UI probes the camera's supported capture resolutions in the background (`CameraDiscovery.list_resolutions`, ffmpeg `-list_options` on DirectShow) and swaps them into the filter panel's resolution dropdown, keeping "Auto" pinned and falling back to the config `RESOLUTIONS` list when ffmpeg is absent. "Auto" resolves through `resolve_auto_resolution` against the probed modes: 1080p -> 720p -> 480p -> driver default; the capture thread re-opens once the probe lands if it changes the mode. When stepping up in resolution, the capture thread switches the camera to MJPEG first (uncompressed formats cannot carry high resolutions over USB bandwidth).
 
 Camera switching is live: the UI writes to `camera_index_holder` and `CaptureThread` re-opens the device and drains stale frames. A new index gets 3 open attempts; on failure the thread gives up (idle until the next selection) and the status bar reports "Camera N unavailable". On Windows the capture backend is `CAP_DSHOW` (fast opens, stable re-opens); all device open/probe/release operations are serialised by `_camera_op_lock`.
 
@@ -94,6 +94,7 @@ readcam [--list-cameras] [--camera INDEX] [--ocr-interval MS]
 ### System (install separately per platform)
 - **zbar** -- `winget install zbar` / `brew install zbar` / `apt install zbar-tools`
 - **Tesseract** -- `winget install tesseract` / `brew install tesseract` / `apt install tesseract-ocr`
+- **ffmpeg** (optional) -- `winget install ffmpeg` / `brew install ffmpeg` / `apt install ffmpeg`; used for camera names and to query supported capture resolutions (`readcam install-ffmpeg` checks and guides)
 
 ## Versioning
 
