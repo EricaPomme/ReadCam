@@ -403,8 +403,13 @@ class CaptureThread(threading.Thread):
                 else:
                     data = str(data)
                 points = getattr(sym, 'points', [])
+                sym_type = getattr(sym, 'type', 'UNKNOWN')
+                # pyzbar returns a ZBarSymbol IntEnum; str() of it is the
+                # numeric value on Python 3.11+, so use .name and map it
+                # through the decoder's canonical type table.
+                sym_name = str(getattr(sym_type, 'name', sym_type)).upper()
                 results.append(ZBarResult(
-                    type=str(getattr(sym, 'type', 'UNKNOWN')).upper(),
+                    type=ZBarDecoder.TYPE_MAP.get(sym_name, sym_name),
                     data=data,
                     points=points,
                     quality=getattr(sym, 'quality', 0),

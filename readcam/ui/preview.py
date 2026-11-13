@@ -389,6 +389,7 @@ class PreviewPanel(ctk.CTkFrame):
         if det_type == "QR":
             return COLOUR_QR
         elif det_type in (
+            "DM", "AZTEC", "SQCODE",
             "EAN-13", "EAN-8", "UPC-A", "UPC-E",
             "CODE128", "CODE39", "CODE93", "I2OF5",
             "PDF417", "CODABAR", "DATABAR",

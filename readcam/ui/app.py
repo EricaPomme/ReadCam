@@ -340,9 +340,16 @@ class ReadCamApp(ctk.CTk):
                 while True:
                     text_detections = self.ocr_result_queue.get_nowait()
                     for det in text_detections:
-                        self.results_manager.add_text_hit(
-                            det.value, det.bbox, det.confidence,
-                        )
+                        if det.type == "TXT":
+                            self.results_manager.add_text_hit(
+                                det.value, det.bbox, det.confidence,
+                            )
+                        else:
+                            # Barcode/QR results decoded in the OCR thread
+                            # (zxing/zbar) keep their symbology type.
+                            self.results_manager.add_or_update(
+                                det.type, det.value, det.bbox,
+                            )
             except queue.Empty:
                 pass
 

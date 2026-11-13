@@ -13,19 +13,29 @@ class ZBarDecoder(Decoder):
     """
 
     # Map zbar symbology names to our canonical categories
+    # (keys match pyzbar's ZBarSymbol enum member names)
     TYPE_MAP = {
         "QRCODE": "QR",
         "EAN-13": "EAN-13",
+        "EAN13": "EAN-13",
         "EAN-8": "EAN-8",
+        "EAN8": "EAN-8",
         "UPC-A": "UPC-A",
+        "UPCA": "UPC-A",
         "UPC-E": "UPC-E",
+        "UPCE": "UPC-E",
         "CODE-128": "CODE128",
+        "CODE128": "CODE128",
         "CODE-39": "CODE39",
+        "CODE39": "CODE39",
         "CODE-93": "CODE93",
+        "CODE93": "CODE93",
         "CODABAR": "CODABAR",
         "I2/5": "I2OF5",
+        "I25": "I2OF5",
         "PDF417": "PDF417",
         "DATABAR": "DATABAR",
+        "DATABAR_EXP": "DATABAR",
     }
 
     def __init__(self, debug: bool = False):
@@ -71,8 +81,11 @@ class ZBarDecoder(Decoder):
             else:
                 raw_data = str(raw_data)
 
-            sym_type = str(getattr(sym, 'type', 'UNKNOWN')).upper()
-            our_type = self.TYPE_MAP.get(sym_type, sym_type)
+            sym_type = getattr(sym, 'type', 'UNKNOWN')
+            # pyzbar returns a ZBarSymbol IntEnum; str() of it is the
+            # numeric value on Python 3.11+, so use .name instead.
+            sym_name = str(getattr(sym_type, 'name', sym_type)).upper()
+            our_type = self.TYPE_MAP.get(sym_name, sym_name)
 
             # Polygon points -> bounding box
             points = getattr(sym, 'points', [])
