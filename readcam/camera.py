@@ -137,6 +137,7 @@ class CaptureThread(threading.Thread):
         frame_interval_ms: int = DEFAULT_FRAME_INTERVAL,
         ocr_interval_ms: int = 1500,
         ocr_interval_holder: Optional[dict] = None,
+        auto_holder: Optional[dict] = None,
         debug: bool = False,
     ):
         super().__init__(name="capture", daemon=True)
@@ -152,6 +153,8 @@ class CaptureThread(threading.Thread):
             ocr_interval_holder if ocr_interval_holder is not None
             else {"ms": ocr_interval_ms}
         )
+        # Shared auto-scan toggle; False disables zbar + OCR frame pushes
+        self.auto_holder = auto_holder if auto_holder is not None else {"enabled": True}
         self.debug = debug
 
         self._cap: Optional[cv2.VideoCapture] = None
@@ -189,14 +192,18 @@ class CaptureThread(threading.Thread):
                 time.sleep(0.05)
                 continue
 
-            # Fast decode: run zbar on the frame
-            zbar_results = self._decode_zbar(frame)
-            if zbar_results:
-                for zr in zbar_results:
-                    logger.info(
-                        "zbar: %s %r (quality=%d)",
-                        zr.type, zr.data, zr.quality,
-                    )
+            # Fast decode: run zbar on the frame (auto mode only)
+            zbar_results = []
+            if self.auto_holder.get("enabled"):
+                zbar_results = self._decode_zbar(frame)
+                if zbar_results:
+                    for zr in zbar_results:
+                        logger.info(
+                            "zbar: %s %r (quality=%d)",
+                            zr.type, zr.data, zr.quality,
+                        )
+            else:
+                logger.debug("Auto-scan disabled; skipping zbar decode")
 
             # Push to UI queue (non-blocking, drop if lagging)
             try:
@@ -204,9 +211,9 @@ class CaptureThread(threading.Thread):
             except queue.Full:
                 logger.debug("frame_queue full; dropped frame")
 
-            # Periodically push a frame to the OCR pipeline
+            # Periodically push a frame to the OCR pipeline (auto mode)
             now = time.time()
-            if now - self._last_ocr_time >= self.ocr_interval:
+            if self.auto_holder.get("enabled") and now - self._last_ocr_time >= self.ocr_interval:
                 self._last_ocr_time = now
                 # Pick up adaptive interval updates from the OCR thread
                 adaptive_ms = self.ocr_interval_holder.get("ms")
@@ -306,6 +313,7 @@ class OCRThread(threading.Thread):
         pause_event: threading.Event,
         roi_holder: Optional[dict] = None,
         ocr_interval_holder: Optional[dict] = None,
+        auto_holder: Optional[dict] = None,
         debug: bool = False,
     ):
         super().__init__(name="ocr", daemon=True)
@@ -315,6 +323,8 @@ class OCRThread(threading.Thread):
         self.pause_event = pause_event
         # Shared ROI (x, y, w, h) set by UI mouse selection, or None
         self.roi_holder = roi_holder if roi_holder is not None else {"roi": None}
+        # Shared auto-scan toggle; False drops whole-frame OCR jobs
+        self.auto_holder = auto_holder if auto_holder is not None else {"enabled": True}
         # Shared with the capture thread, which applies our adaptive interval
         self.ocr_interval_holder = (
             ocr_interval_holder if ocr_interval_holder is not None
@@ -347,6 +357,10 @@ class OCRThread(threading.Thread):
             # Crop to the manual selection region if one is active
             roi = self.roi_holder.get("roi")
             offset = (0, 0)
+            if roi is None and not self.auto_holder.get("enabled"):
+                # Manual-only mode: ignore whole-frame jobs with no selection
+                logger.debug("Manual-only mode and no ROI; dropping OCR job")
+                continue
             if roi is not None:
                 rx, ry, rw, rh = roi
                 fh, fw = frame.shape[:2]

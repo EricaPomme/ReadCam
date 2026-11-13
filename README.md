@@ -90,6 +90,19 @@ readcam --ocr-interval 2000 --frame-interval 33
 readcam --verbose
 ```
 
+### Manual-only mode
+
+```bash
+# No automatic scanning -- only the drag-selected region is decoded
+readcam --no-auto
+```
+
+In this mode the camera feed displays normally, but nothing is scanned
+until you drag a selection box on the preview. The status bar shows a
+`MANUAL` button (yellow) instead of `AUTO` (blue) -- both are live
+toggle buttons, so the mode can be switched at any time while running.
+Dragging still triggers an immediate OCR pass on mouse-up.
+
 Logged events include: camera discovery, device open/release, zbar
 barcode/QR detections, OCR detections (with confidence and timing),
 new results entering the list, stale result removal, clipboard copies,
@@ -100,6 +113,7 @@ pause/resume, and shutdown.
 | Key | Action |
 |-----|--------|
 | `Space` | Pause / resume scanning |
+| `A` | Toggle auto-scan / manual-only |
 | `Escape` | Quit |
 | `R` | Clear all results |
 | Drag on preview | Select manual OCR region (persists until next click) |

@@ -39,6 +39,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Frame capture interval in ms (default: {DEFAULT_FRAME_INTERVAL}).",
     )
     scan.add_argument(
+        "--no-auto",
+        action="store_true",
+        help=(
+            "Disable automatic scanning; only OCR/decode the manually "
+            "selected region (drag on the preview)."
+        ),
+    )
+    scan.add_argument(
         "--debug",
         action="store_true",
         help="Enable verbose debug logging.",
@@ -123,6 +131,7 @@ def entry_point() -> int:
             camera_index=args.camera,
             ocr_interval_ms=args.ocr_interval,
             frame_interval_ms=args.frame_interval,
+            no_auto=args.no_auto,
             debug=args.debug,
         )
         app.run()

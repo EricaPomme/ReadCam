@@ -25,7 +25,7 @@ from ..decoders.zbar_decoder import ZBarDecoder
 from ..results import ResultsManager
 from .preview import PreviewPanel
 from .results_panel import ResultsPanel
-from .theme import FONTS, setup_theme
+from .theme import COLOURS, FONTS, setup_theme
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ class ReadCamApp(ctk.CTk):
         camera_index: int = 0,
         ocr_interval_ms: int = DEFAULT_OCR_INTERVAL,
         frame_interval_ms: int = DEFAULT_FRAME_INTERVAL,
+        no_auto: bool = False,
         debug: bool = False,
     ):
         setup_theme()
@@ -56,6 +57,7 @@ class ReadCamApp(ctk.CTk):
         self.camera_index = camera_index
         self.ocr_interval_ms = ocr_interval_ms
         self.frame_interval_ms = frame_interval_ms
+        self.no_auto = no_auto
         self.debug = debug
 
         # Thread communication
@@ -66,6 +68,8 @@ class ReadCamApp(ctk.CTk):
         self.ocr_interval_holder = {"ms": ocr_interval_ms}
         # Shared manual ROI selection (x, y, w, h) or None
         self.roi_holder = {"roi": None}
+        # Shared auto-scan toggle (False with --no-auto)
+        self.auto_holder = {"enabled": not no_auto}
 
         # Thread control
         self.pause_event = threading.Event()
@@ -98,18 +102,45 @@ class ReadCamApp(ctk.CTk):
         self.results_panel = ResultsPanel(self)
         self.results_panel.grid(row=0, column=1, padx=5, pady=5, sticky="nsew")
 
-        self.status_bar = ctk.CTkLabel(
-            self,
-            text="Initialising...",
-            font=FONTS["small"],
-            text_color="#888888",
-            anchor="w",
-        )
+        # Status bar: text (left) + interactive toggle buttons (right)
+        self.status_bar = ctk.CTkFrame(self, fg_color="transparent")
         self.status_bar.grid(
             row=1, column=0, columnspan=2,
             padx=5, pady=(0, 2),
             sticky="ew",
         )
+        self.status_bar.columnconfigure(0, weight=1)
+
+        self.status_label = ctk.CTkLabel(
+            self.status_bar,
+            text="Initialising...",
+            font=FONTS["small"],
+            text_color="#888888",
+            anchor="w",
+        )
+        self.status_label.grid(row=0, column=0, sticky="ew")
+
+        self.pause_btn = ctk.CTkButton(
+            self.status_bar,
+            text="Pause",
+            font=FONTS["small"],
+            width=90,
+            height=24,
+            command=self._toggle_pause,
+        )
+        self.pause_btn.grid(row=0, column=1, padx=(8, 4))
+
+        self.auto_btn = ctk.CTkButton(
+            self.status_bar,
+            text="AUTO" if not no_auto else "MANUAL",
+            font=FONTS["small"],
+            width=90,
+            height=24,
+            fg_color=COLOURS["info"] if not no_auto else COLOURS["warning"],
+            hover_color=COLOURS["info"] if not no_auto else COLOURS["warning"],
+            command=self._toggle_auto,
+        )
+        self.auto_btn.grid(row=0, column=2, padx=(0, 4))
 
         # --- Start background threads ---
         self.capture_thread = CaptureThread(
@@ -121,6 +152,7 @@ class ReadCamApp(ctk.CTk):
             frame_interval_ms=frame_interval_ms,
             ocr_interval_ms=ocr_interval_ms,
             ocr_interval_holder=self.ocr_interval_holder,
+            auto_holder=self.auto_holder,
             debug=debug,
         )
         self.capture_thread.start()
@@ -132,6 +164,7 @@ class ReadCamApp(ctk.CTk):
             pause_event=self.pause_event,
             roi_holder=self.roi_holder,
             ocr_interval_holder=self.ocr_interval_holder,
+            auto_holder=self.auto_holder,
             debug=debug,
         )
         self.ocr_thread.start()
@@ -142,6 +175,7 @@ class ReadCamApp(ctk.CTk):
         self._fps_timer = time.time()
         self._last_decay_time = 0.0
         self._last_results_version = -1
+        self._refresh_status_buttons()
         self.after(50, self._update_loop)
 
         # --- Clean shutdown ---
@@ -151,6 +185,7 @@ class ReadCamApp(ctk.CTk):
         self.bind("<space>", lambda _e: self._toggle_pause())
         self.bind("<Escape>", lambda _e: self._on_close())
         self.bind("<Key-r>", lambda _e: self._clear_results())
+        self.bind("<Key-a>", lambda _e: self._toggle_auto())
 
     # ------------------------------------------------------------------
     # UI update loop (runs on the main thread via .after())
@@ -230,7 +265,9 @@ class ReadCamApp(ctk.CTk):
         parts.append(f"{rc} result{'s' if rc != 1 else ''}")
 
         if self._paused:
-            parts.append("PAUSED")
+            parts.append("paused")
+        if self.no_auto and not self.roi_holder.get("roi"):
+            parts.append("no region selected")
 
         if not self._zbar_available:
             parts.append("zbar unavailable")
@@ -262,6 +299,41 @@ class ReadCamApp(ctk.CTk):
         else:
             self.pause_event.clear()
             logger.info("Scanning resumed")
+        self._refresh_status_buttons()
+
+    def _toggle_auto(self) -> None:
+        """Switch between automatic scanning and manual-only mode."""
+        enabled = not self.auto_holder.get("enabled")
+        self.auto_holder["enabled"] = enabled
+        self.no_auto = not enabled
+        logger.info(
+            "%s", "Auto-scan enabled" if enabled
+            else "Auto-scan disabled (manual-only mode)",
+        )
+        self._refresh_status_buttons()
+
+    def _refresh_status_buttons(self) -> None:
+        """Sync the status-bar toggle buttons with current state."""
+        if self._paused:
+            self.pause_btn.configure(
+                text="Resume", fg_color=COLOURS["warning"],
+                hover_color=COLOURS["warning"],
+            )
+        else:
+            self.pause_btn.configure(
+                text="Pause", fg_color=COLOURS["info"],
+                hover_color=COLOURS["info"],
+            )
+        if self.auto_holder.get("enabled"):
+            self.auto_btn.configure(
+                text="AUTO", fg_color=COLOURS["info"],
+                hover_color=COLOURS["info"],
+            )
+        else:
+            self.auto_btn.configure(
+                text="MANUAL", fg_color=COLOURS["warning"],
+                hover_color=COLOURS["warning"],
+            )
 
     def _clear_results(self) -> None:
         """Clear all results (R key)."""
