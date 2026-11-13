@@ -154,7 +154,7 @@ class ReadCamApp(ctk.CTk):
         self.filter_panel = FilterPanel(
             self,
             filters=self.filter_holder,
-            on_change_end=self._request_ocr_now,
+            on_change_end=self._on_filters_changed,
         )
         self.filter_panel.grid(row=2, column=0, padx=5, pady=(0, 5), sticky="ew")
 
@@ -248,6 +248,7 @@ class ReadCamApp(ctk.CTk):
         self._frame_count = 0
         self._fps_timer = time.time()
         self._last_decay_time = 0.0
+        self._last_results_refresh = 0.0
         self._last_results_version = -1
         self._refresh_status_buttons()
         self.after(50, self._update_loop)
@@ -316,7 +317,9 @@ class ReadCamApp(ctk.CTk):
                 while True:
                     text_detections = self.ocr_result_queue.get_nowait()
                     for det in text_detections:
-                        self.results_manager.add_text_hit(det.value, det.bbox)
+                        self.results_manager.add_text_hit(
+                            det.value, det.bbox, det.confidence,
+                        )
             except queue.Empty:
                 pass
 
@@ -337,10 +340,17 @@ class ReadCamApp(ctk.CTk):
                 self.results_manager.get_active(),
             )
 
-            # 6. Refresh results list only when something changed
+            # 6. Refresh results list when something changed, or once per
+            # second so confidence-driven re-sorting and relative times
+            # stay current (version only bumps on add/remove).
+            now_refresh = time.time()
             version = self.results_manager.version
-            if version != self._last_results_version:
+            if (
+                version != self._last_results_version
+                or now_refresh - self._last_results_refresh >= 1.0
+            ):
                 self._last_results_version = version
+                self._last_results_refresh = now_refresh
                 self.results_panel.update_results(
                     self.results_manager.get_sorted(),
                 )
@@ -447,6 +457,15 @@ class ReadCamApp(ctk.CTk):
         count = self.results_manager.count
         self.results_manager.clear()
         logger.info("Cleared %d result(s)", count)
+
+    def _on_filters_changed(self) -> None:
+        """Filter sliders changed: drop invalidated results, then re-OCR."""
+        removed = self.results_manager.revalidate_text()
+        if removed:
+            self.results_panel.update_results(
+                self.results_manager.get_sorted(),
+            )
+        self._request_ocr_now()
 
     def _request_ocr_now(self) -> None:
         """Run an immediate OCR pass on the latest frame (mouse-up on ROI)."""

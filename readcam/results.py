@@ -10,6 +10,10 @@ from .config import (
     CONFIDENCE_MAX,
     CONFIDENCE_DECAY_DELAY,
     CONFIDENCE_REMOVE_DELAY,
+    TEXT_MIN_ALNUM_RATIO,
+    TEXT_MIN_CONFIDENCE,
+    TEXT_MIN_LETTERS,
+    TEXT_MIN_LENGTH,
     TEXT_REQUIRED_HITS,
 )
 
@@ -23,6 +27,7 @@ class Result:
     type: str                     # "QR", "EAN-13", "CODE128", "TXT"
     value: str                    # Decoded content
     confidence: float = 1.0       # ~seconds visible (capped at CONFIDENCE_MAX)
+    source_confidence: float = 1.0  # decoder-reported quality (0.0-1.0)
     hits: int = 1                 # Number of detections
     first_seen: float = 0.0       # Unix timestamp of first detection
     last_seen: float = 0.0        # Unix timestamp of most recent detection
@@ -123,12 +128,15 @@ class ResultsManager:
         self,
         value: str,
         bbox: Optional[tuple] = None,
+        source_confidence: float = 1.0,
     ) -> Optional[Result]:
         """Register a text detection sighting.
 
         Text results require multiple consistent detections before
         they appear (to reduce OCR false positives). Returns the
         Result once it passes the threshold, or None otherwise.
+        *source_confidence* is the decoder-reported quality (0.0-1.0),
+        kept so filter changes can re-validate the result later.
         """
         key = ("TXT", value)
         now = time.time()
@@ -142,6 +150,9 @@ class ResultsManager:
                 result.last_seen = now
                 if bbox:
                     result.bbox = bbox
+                result.source_confidence = max(
+                    result.source_confidence, source_confidence,
+                )
                 required_hits = self._filters.get(
                     "required_hits", TEXT_REQUIRED_HITS,
                 )
@@ -151,6 +162,7 @@ class ResultsManager:
                 type="TXT",
                 value=value,
                 confidence=1.0,
+                source_confidence=source_confidence,
                 hits=1,
                 first_seen=now,
                 last_seen=now,
@@ -203,6 +215,49 @@ class ResultsManager:
 
         for key in to_remove:
             logger.info("Removed stale result: %s %r", key[0], key[1])
+
+    def revalidate_text(self) -> int:
+        """Drop text results that fail the current filter criteria.
+
+        Called when the UI filter sliders change, so a result that the
+        new thresholds would reject disappears immediately instead of
+        lingering until natural decay. Uses the stored decoder-reported
+        confidence (not the presence-based score). Returns the number
+        of results removed.
+        """
+        # Imported lazily to keep results.py free of decoder dependencies.
+        from .decoders.ocr_decoder import looks_like_text
+
+        min_length = int(self._filters.get("min_length", TEXT_MIN_LENGTH))
+        min_alnum_ratio = self._filters.get(
+            "min_alnum_ratio", TEXT_MIN_ALNUM_RATIO,
+        )
+        min_letters = int(self._filters.get("min_letters", TEXT_MIN_LETTERS))
+        min_confidence = self._filters.get(
+            "min_confidence", TEXT_MIN_CONFIDENCE,
+        )
+
+        to_remove = []
+        with self._lock:
+            for key, result in self._results.items():
+                if result.type != "TXT":
+                    continue
+                if not looks_like_text(
+                    result.value,
+                    min_length=min_length,
+                    min_alnum_ratio=min_alnum_ratio,
+                    min_letters=min_letters,
+                ) or result.source_confidence * 100.0 < min_confidence:
+                    to_remove.append(key)
+
+            if to_remove:
+                self._version += 1
+                for key in to_remove:
+                    del self._results[key]
+
+        for key in to_remove:
+            logger.info("Filter invalidated result: %s %r", key[0], key[1])
+        return len(to_remove)
 
     def get_sorted(self) -> list[Result]:
         """Return all results ranked by prominence.

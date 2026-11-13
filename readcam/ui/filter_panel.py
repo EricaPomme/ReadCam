@@ -167,3 +167,6 @@ class FilterPanel(ctk.CTkFrame):
             self._sliders[key].set(default)
             self._labels[key].configure(text=fmt(default))
         logger.info("Filter thresholds reset to defaults")
+        # Reset changes thresholds without a slider release, so fire the
+        # change hook manually (drops invalidated results, re-runs OCR).
+        self._on_release()
