@@ -10,6 +10,18 @@ import customtkinter as ctk
 
 logger = logging.getLogger(__name__)
 
+
+def _log_thread_exception(args) -> None:
+    """Log uncaught thread exceptions instead of letting them vanish."""
+    logger.critical(
+        "Uncaught exception in thread %s",
+        args.thread.name if args.thread else "<unknown>",
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+
+
+threading.excepthook = _log_thread_exception
+
 from ..camera import CaptureThread, CameraDiscovery, OCRThread
 from ..config import (
     DEFAULT_FRAME_INTERVAL,
@@ -23,6 +35,7 @@ from ..config import (
 from ..decoders.ocr_decoder import OCRDecoder
 from ..decoders.zbar_decoder import ZBarDecoder
 from ..results import ResultsManager
+from .filter_panel import FilterPanel
 from .preview import PreviewPanel
 from .results_panel import ResultsPanel
 from .theme import COLOURS, FONTS, setup_theme
@@ -47,11 +60,13 @@ class ReadCamApp(ctk.CTk):
         self.title(UI_TITLE)
         self.minsize(UI_MIN_WIDTH, UI_MIN_HEIGHT)
 
-        # Grid: preview (left, fixed-ish) | results (right, expands)
+        # Grid: column 0 = toolbar / preview / filters, column 1 = results
         self.grid_columnconfigure(0, weight=0, minsize=UI_PREVIEW_MIN_WIDTH)
         self.grid_columnconfigure(1, weight=1, minsize=UI_RESULTS_MIN_WIDTH)
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=0)  # status bar
+        self.grid_rowconfigure(0, weight=0)  # camera toolbar
+        self.grid_rowconfigure(1, weight=1)  # preview
+        self.grid_rowconfigure(2, weight=0)  # filter panel
+        self.grid_rowconfigure(3, weight=0)  # status bar
 
         # Configuration
         self.camera_index = camera_index
@@ -70,6 +85,10 @@ class ReadCamApp(ctk.CTk):
         self.roi_holder = {"roi": None}
         # Shared auto-scan toggle (False with --no-auto)
         self.auto_holder = {"enabled": not no_auto}
+        # Shared live filter thresholds written by the sliders
+        self.filter_holder: dict = {}
+        # Shared camera index; CaptureThread re-opens on change
+        self.camera_index_holder: dict = {"index": camera_index}
 
         # Thread control
         self.pause_event = threading.Event()
@@ -79,7 +98,6 @@ class ReadCamApp(ctk.CTk):
         # State
         self._latest_frame: Optional = None
         self._latest_zbar: list = []
-        self._camera_connected = False
 
         # Decoder availability (checked once at startup)
         self._ocr_available = OCRDecoder._check_available()
@@ -89,23 +107,64 @@ class ReadCamApp(ctk.CTk):
             self._zbar_available, self._ocr_available,
         )
 
-        # Results
-        self.results_manager = ResultsManager()
+        # Results (shares the filter holder with the OCR thread)
+        self.results_manager = ResultsManager(filter_holder=self.filter_holder)
 
         # --- Build UI ---
+        # Toolbar row (above the preview): camera selector + refresh
+        self.toolbar = ctk.CTkFrame(self, fg_color="transparent")
+        self.toolbar.grid(row=0, column=0, padx=5, pady=(5, 0), sticky="ew")
+        self.toolbar.columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            self.toolbar, text="Camera:", font=FONTS["small"],
+        ).grid(row=0, column=0, padx=(0, 4))
+
+        self._camera_map: dict[str, int] = {}
+        self._cameras: list = []
+        self._failure_handled = False
+        self.camera_menu = ctk.CTkOptionMenu(
+            self.toolbar,
+            values=["Detecting cameras..."],
+            font=FONTS["small"],
+            height=24,
+            state="disabled",
+            command=self._on_camera_selected,
+        )
+        self.camera_menu.grid(row=0, column=1, sticky="ew")
+
+        self.camera_refresh_btn = ctk.CTkButton(
+            self.toolbar,
+            text="Refresh",
+            font=FONTS["small"],
+            width=70,
+            height=24,
+            command=self._refresh_cameras,
+        )
+        self.camera_refresh_btn.grid(row=0, column=2, padx=(4, 0))
+
         self.preview_panel = PreviewPanel(
             self,
             on_selection_end=self._request_ocr_now,
         )
-        self.preview_panel.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        self.preview_panel.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+
+        self.filter_panel = FilterPanel(
+            self,
+            filters=self.filter_holder,
+            on_change_end=self._request_ocr_now,
+        )
+        self.filter_panel.grid(row=2, column=0, padx=5, pady=(0, 5), sticky="ew")
 
         self.results_panel = ResultsPanel(self)
-        self.results_panel.grid(row=0, column=1, padx=5, pady=5, sticky="nsew")
+        self.results_panel.grid(
+            row=0, column=1, rowspan=3, padx=5, pady=5, sticky="nsew",
+        )
 
         # Status bar: text (left) + interactive toggle buttons (right)
         self.status_bar = ctk.CTkFrame(self, fg_color="transparent")
         self.status_bar.grid(
-            row=1, column=0, columnspan=2,
+            row=3, column=0, columnspan=2,
             padx=5, pady=(0, 2),
             sticky="ew",
         )
@@ -145,6 +204,7 @@ class ReadCamApp(ctk.CTk):
         # --- Start background threads ---
         self.capture_thread = CaptureThread(
             camera_index=camera_index,
+            camera_index_holder=self.camera_index_holder,
             frame_queue=self.frame_queue,
             ocr_queue=self.ocr_queue,
             pause_event=self.pause_event,
@@ -165,6 +225,7 @@ class ReadCamApp(ctk.CTk):
             roi_holder=self.roi_holder,
             ocr_interval_holder=self.ocr_interval_holder,
             auto_holder=self.auto_holder,
+            filter_holder=self.filter_holder,
             debug=debug,
         )
         self.ocr_thread.start()
@@ -177,6 +238,9 @@ class ReadCamApp(ctk.CTk):
         self._last_results_version = -1
         self._refresh_status_buttons()
         self.after(50, self._update_loop)
+
+        # Populate the camera dropdown without blocking the window
+        self._start_discovery(select_index=camera_index)
 
         # --- Clean shutdown ---
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -193,6 +257,17 @@ class ReadCamApp(ctk.CTk):
 
     def _update_loop(self) -> None:
         """Periodic update: poll queues, redraw preview, refresh results."""
+        try:
+            self._update_tick()
+        except Exception:
+            # Never let a single bad tick kill the loop (a dead loop
+            # stops consuming frame_queue and the UI freezes).
+            logger.exception("UI update tick failed")
+        finally:
+            self.after(50, self._update_loop)
+
+    def _update_tick(self) -> None:
+        """One iteration of the update loop."""
         # Keep the OCR thread's ROI in sync with the UI selection
         self.roi_holder["roi"] = self.preview_panel.selection
 
@@ -203,7 +278,6 @@ class ReadCamApp(ctk.CTk):
                     self._latest_frame, self._latest_zbar = (
                         self.frame_queue.get_nowait()
                     )
-                    self._camera_connected = True
             except queue.Empty:
                 pass
 
@@ -250,11 +324,16 @@ class ReadCamApp(ctk.CTk):
                 self._fps_timer = time.time()
 
         # --- Update status bar ---
+        self._sync_camera_names()
+        self._sync_camera_failure()
         parts: list[str] = []
 
         # Camera status
-        if self._camera_connected:
-            parts.append(f"Camera {self.camera_index}")
+        t = self.capture_thread
+        if t.connected:
+            parts.append(t.current_index_name)
+        elif t.open_failed:
+            parts.append(f"Camera {t.camera_index} unavailable")
         else:
             parts.append("Connecting...")
 
@@ -277,8 +356,6 @@ class ReadCamApp(ctk.CTk):
         self.status_label.configure(
             text=" \u00b7 ".join(parts) if parts else "No camera feed",
         )
-
-        self.after(50, self._update_loop)
 
     # ------------------------------------------------------------------
     # App lifecycle
@@ -365,3 +442,158 @@ class ReadCamApp(ctk.CTk):
         except Exception:
             pass
         logger.info("Shutdown complete")
+
+    # ------------------------------------------------------------------
+    # Camera selection
+    # ------------------------------------------------------------------
+
+    def _start_discovery(
+        self,
+        select_index: Optional[int] = None,
+        full: bool = False,
+        apply_selection: bool = False,
+    ) -> None:
+        """Populate the camera menu.
+
+        By default this is instant and lazy: indices 0-9 with generic
+        names, no device access. With *full=True* (Refresh button or a
+        failed selection) a real probe runs in a background thread and
+        returns only the cameras that actually exist, with friendly
+        names. With *apply_selection=True* the chosen camera is also
+        written to the holder (used after a failure, to resume
+        scanning on the first available camera).
+        """
+        if not full:
+            self._populate_camera_menu(
+                CameraDiscovery.quick_indices(), select_index, apply_selection,
+            )
+            return
+
+        self.camera_menu.configure(
+            values=["Detecting cameras..."], state="disabled",
+        )
+        self._camera_map = {}
+
+        def probe() -> None:
+            cameras = CameraDiscovery.list_cameras()
+            self.after(0, lambda: self._populate_camera_menu(
+                cameras, select_index, apply_selection,
+            ))
+
+        threading.Thread(target=probe, daemon=True, name="camprobe").start()
+
+    def _refresh_cameras(self) -> None:
+        """Re-run camera discovery (Refresh button; full device probe)."""
+        logger.info("Refreshing camera list")
+        self._start_discovery(
+            select_index=self.camera_index_holder.get("index"),
+            full=True,
+        )
+
+    def _populate_camera_menu(
+        self,
+        cameras: list,
+        select_index: Optional[int] = None,
+        apply_selection: bool = False,
+    ) -> None:
+        """Fill the dropdown with detected cameras (runs on the UI thread)."""
+        if not cameras:
+            self.camera_menu.configure(
+                values=["No cameras found"], state="disabled",
+            )
+            logger.warning("No cameras detected")
+            return
+
+        self._cameras = list(cameras)
+        self._camera_map = {
+            f"[{cam.index}] {cam.name}": cam.index for cam in cameras
+        }
+        choices = list(self._camera_map)
+        self.camera_menu.configure(values=choices, state="normal")
+
+        # Prefer the requested index (current or --camera), else the first
+        chosen = next(
+            (label for label, idx in self._camera_map.items()
+             if idx == select_index),
+            choices[0],
+        )
+        self.camera_menu.set(chosen)
+        logger.info("Camera menu populated: %s", choices)
+
+        if apply_selection:
+            self._on_camera_selected(chosen)
+
+    def _on_camera_selected(self, choice: str) -> None:
+        """Dropdown selection: request a live switch via the shared holder."""
+        index = self._camera_map.get(choice)
+        if index is None or index == self.camera_index_holder.get("index"):
+            return
+        self.camera_index_holder["index"] = index
+        logger.info("Camera selection changed to [%d] %s", index, choice)
+        # Stale frames/selection/cache from the previous camera no longer
+        # apply; the preview stays blank until the new camera delivers.
+        self.preview_panel.clear()
+        self._latest_frame = None
+        self._latest_zbar = []
+
+    def _sync_camera_names(self) -> None:
+        """Fold in friendly names resolved by the capture thread.
+
+        The lazy startup list only knows generic names; once a camera
+        is opened, its real name (probed in the capture thread) replaces
+        the generic entry in the dropdown.
+        """
+        t = self.capture_thread
+        if not t.connected or t._camera_name is None:
+            return
+        for cam in self._cameras:
+            if cam.index == t.camera_index and cam.name != t._camera_name:
+                cam.name = t._camera_name
+                self._camera_map = {
+                    f"[{c.index}] {c.name}": c.index for c in self._cameras
+                }
+                self.camera_menu.configure(values=list(self._camera_map))
+                self.camera_menu.set(f"[{cam.index}] {cam.name}")
+                logger.info("Camera [%d] resolved as %r", cam.index, cam.name)
+                break
+
+    def _sync_camera_failure(self) -> None:
+        """React to a selection that failed to open (runs on the UI thread).
+
+        When the capture thread gives up on an index (3 failed open
+        attempts): drop that entry from the dropdown, then run one
+        background full probe so the list converges to the cameras
+        that actually exist -- no Refresh needed. The probe result
+        auto-selects the first available camera to resume scanning.
+        """
+        t = self.capture_thread
+        if t.connected:
+            self._failure_handled = False
+            return
+        if t.gave_up and not self._failure_handled:
+            self._failure_handled = True
+            index = t.camera_index
+            logger.info(
+                "Camera [%d] unavailable; removing from list and re-probing",
+                index,
+            )
+            self._remove_camera(index)
+            self._start_discovery(full=True, apply_selection=True)
+
+    def _remove_camera(self, index: int) -> None:
+        """Drop an index from the dropdown (proved unavailable)."""
+        self._cameras = [c for c in self._cameras if c.index != index]
+        if not self._cameras:
+            self.camera_menu.configure(
+                values=["No cameras found"], state="disabled",
+            )
+            return
+        self._camera_map = {
+            f"[{c.index}] {c.name}": c.index for c in self._cameras
+        }
+        self.camera_menu.configure(
+            values=list(self._camera_map), state="normal",
+        )
+        # Keep the failed selection visible (annotated) as the display
+        # value; the probe result will replace it shortly.
+        self.camera_menu.set(f"[{index}] Camera {index} (unavailable)")

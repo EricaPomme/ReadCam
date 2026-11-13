@@ -40,7 +40,8 @@ Dark mode, green accent. Bounding boxes drawn with OpenCV on the frame before PI
 - **Confidence** increments on each re-detection (capped at 100).
 - **Decay**: confidence drops by ~1 per 2 seconds once unseen for 5 s.
 - **Removal**: purged entirely after 30 s of no sightings.
-- **Text threshold**: OCR text requires 2 detections before it appears (reduces false positives).
+- **Text threshold**: OCR text requires 3 detections before it appears (reduces false positives).
+- **Live filter sliders**: a Filters panel below the preview (always visible) adjusts the text thresholds and decay/removal delays at runtime via a shared `filter_holder` dict; consumers fall back to config defaults for missing keys.
 
 ### Bounding Box Colours
 - Green: QR codes
@@ -52,7 +53,9 @@ Dark mode, green accent. Bounding boxes drawn with OpenCV on the frame before PI
 Both `pyzbar` (QR/barcode) and `pytesseract` (OCR) are optional. The app detects their absence at startup and shows status in the status bar. No crashes if missing.
 
 ### Camera Discovery
-Probes indices 0-9 with `cv2.VideoCapture`. Tries `ffmpeg -list_devices` for friendly names; falls back to `Camera N`.
+Startup is lazy and instant: the dropdown lists candidate indices 0-9 (`Camera N`) without touching any device. Friendly names are resolved in the capture thread once a camera opens (via `ffmpeg -list_devices`, fallback `Camera N`) and folded into the dropdown by the UI. The **Refresh** button runs a full probe (`CameraDiscovery.list_cameras`, opens each device) in a background thread.
+
+Camera switching is live: the UI writes to `camera_index_holder` and `CaptureThread` re-opens the device and drains stale frames. A new index gets 3 open attempts; on failure the thread gives up (idle until the next selection) and the status bar reports "Camera N unavailable". On Windows the capture backend is `CAP_DSHOW` (fast opens, stable re-opens); all device open/probe/release operations are serialised by `_camera_op_lock`.
 
 ### Manual OCR Region (ROI)
 Dragging on the preview sets a selection (frame coordinates) exposed via

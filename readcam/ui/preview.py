@@ -6,7 +6,7 @@ from typing import Callable, Optional
 import cv2
 import customtkinter as ctk
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageTk
 
 from ..camera import ZBarResult
 from ..config import (
@@ -50,7 +50,8 @@ class PreviewPanel(ctk.CTkFrame):
         )
         self.image_label.pack(fill="both", expand=True, padx=10, pady=10)
 
-        self._current_ctk_image = None
+        self._current_photo_image: Optional[ImageTk.PhotoImage] = None
+        self._showing_image = False
         self._frame_size = (PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT)
 
         # Cached last render inputs, so drags can re-render without
@@ -149,19 +150,33 @@ class PreviewPanel(ctk.CTkFrame):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOUR_SELECTION, 2,
             )
 
-        # Convert BGR OpenCV -> RGB PIL -> CTkImage
+        # Convert BGR OpenCV -> RGB PIL, scale to fit, and display on a
+        # single reusable PhotoImage. Creating a new image per frame
+        # churns thousands of Tk images; when one is garbage-collected
+        # while the label still points at it, Tk raises TclError
+        # ("image ... doesn't exist"). Updating one stable image via
+        # paste() avoids that entirely.
         rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb)
         pil_image = self._resize_to_fit(pil_image)
 
-        ctk_image = ctk.CTkImage(
-            light_image=pil_image,
-            dark_image=pil_image,
-            size=pil_image.size,
-        )
-
-        self.image_label.configure(image=ctk_image, text="")
-        self._current_ctk_image = ctk_image
+        if (
+            self._current_photo_image is None
+            or self._current_photo_image.width() != pil_image.width
+            or self._current_photo_image.height() != pil_image.height
+        ):
+            # Size changed (or first frame): new PhotoImage
+            self._current_photo_image = ImageTk.PhotoImage(pil_image)
+            self.image_label.configure(
+                image=self._current_photo_image, text="",
+            )
+        else:
+            self._current_photo_image.paste(pil_image)
+            if not self._showing_image:
+                self.image_label.configure(
+                    image=self._current_photo_image, text="",
+                )
+        self._showing_image = True
 
         # Remember the mapping for mouse-coordinate conversion.
         # CTk displays the photo on the *inner* tkinter.Label (scaled by
@@ -213,6 +228,26 @@ class PreviewPanel(ctk.CTkFrame):
     def latest_frame(self) -> Optional[np.ndarray]:
         """The most recently displayed frame (for immediate OCR passes)."""
         return self._last_frame
+
+    def clear(self) -> None:
+        """Reset cached frame, overlays, and any selection (camera switch)."""
+        self._last_frame = None
+        self._last_zbar = []
+        self._last_active = []
+        self._selection = None
+        self._drag_start = None
+        self._drag_current = None
+        self._showing_image = False
+        # Detach the image from the inner label *while the PhotoImage is
+        # still referenced here*; the stable image object is kept for
+        # reuse by the next frame.
+        inner = getattr(self.image_label, "_label", None)
+        if inner is not None:
+            inner.configure(image="")
+        self.image_label.configure(
+            image=None,
+            text="No camera feed\n(drag to select an OCR region)",
+        )
 
     def _to_frame_coords(self, event) -> Optional[tuple]:
         """Convert a mouse event to frame coordinates.

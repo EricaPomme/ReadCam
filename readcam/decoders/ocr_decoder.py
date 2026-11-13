@@ -1,5 +1,7 @@
 """OCR text decoder using Tesseract."""
 
+from typing import Optional
+
 import cv2
 import numpy as np
 
@@ -14,23 +16,29 @@ from ..config import (
 from ..install import configure_tesseract
 
 
-def looks_like_text(value: str) -> bool:
+def looks_like_text(
+    value: str,
+    min_length: int = TEXT_MIN_LENGTH,
+    min_alnum_ratio: float = TEXT_MIN_ALNUM_RATIO,
+    min_letters: int = TEXT_MIN_LETTERS,
+) -> bool:
     """Heuristic filter to reject OCR pareidolia (text in noise).
 
     Requires the string to be long enough, mostly alphanumeric,
     and to contain a minimum number of letters. Junk like 'ae',
-    'i>.', 'ik', or symbols-only strings fail.
+    'i>.', 'ik', or symbols-only strings fail. Thresholds may be
+    overridden live by the UI via the optional parameters.
     """
     value = value.strip()
-    if len(value) < TEXT_MIN_LENGTH:
+    if len(value) < min_length:
         return False
 
     alnum = sum(1 for c in value if c.isalnum())
-    if alnum / len(value) < TEXT_MIN_ALNUM_RATIO:
+    if alnum / len(value) < min_alnum_ratio:
         return False
 
     letters = sum(1 for c in value if c.isalpha())
-    if letters < TEXT_MIN_LETTERS:
+    if letters < min_letters:
         return False
 
     return True
@@ -48,12 +56,24 @@ class OCRDecoder(Decoder):
         self,
         min_confidence: int = TEXT_MIN_CONFIDENCE,
         min_length: int = TEXT_MIN_LENGTH,
+        filter_holder: Optional[dict] = None,
         debug: bool = False,
     ):
+        """Create the decoder.
+
+        *filter_holder* is an optional shared dict of live filter
+        overrides written by the UI sliders; missing keys fall back to
+        the constructor defaults (themselves sourced from config).
+        """
         self.min_confidence = min_confidence
         self.min_length = min_length
+        self._filters = filter_holder if filter_holder is not None else {}
         self.debug = debug
         self._available = self._check_available()
+
+    def _get(self, key: str, fallback):
+        """Read a live filter override, falling back to the default."""
+        return self._filters.get(key, fallback)
 
     @staticmethod
     def _check_available() -> bool:
@@ -115,6 +135,11 @@ class OCRDecoder(Decoder):
             return []
 
         # Group words into lines keyed by (block, par, line)
+        min_confidence = self._get("min_confidence", self.min_confidence)
+        min_length = self._get("min_length", self.min_length)
+        min_alnum_ratio = self._get("min_alnum_ratio", TEXT_MIN_ALNUM_RATIO)
+        min_letters = self._get("min_letters", TEXT_MIN_LETTERS)
+
         lines: dict[tuple, dict] = {}
         texts = data.get("text", [])
         confs = data.get("conf", [])
@@ -133,7 +158,7 @@ class OCRDecoder(Decoder):
             except (ValueError, TypeError):
                 conf = -1
 
-            if not word or conf < self.min_confidence:
+            if not word or conf < min_confidence:
                 continue
 
             key = (blocks[i], paras[i], line_nums[i])
@@ -156,9 +181,14 @@ class OCRDecoder(Decoder):
         results: list[Detection] = []
         for entry in lines.values():
             text = " ".join(entry["words"])
-            if len(text) < self.min_length:
+            if len(text) < min_length:
                 continue
-            if not looks_like_text(text):
+            if not looks_like_text(
+                text,
+                min_length=min_length,
+                min_alnum_ratio=min_alnum_ratio,
+                min_letters=min_letters,
+            ):
                 continue
 
             avg_conf = sum(entry["conf"]) / len(entry["conf"]) / 100.0

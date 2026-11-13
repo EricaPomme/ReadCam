@@ -49,8 +49,15 @@ class ResultsManager:
     unseen. Results with zero confidence are eventually removed.
     """
 
-    def __init__(self):
+    def __init__(self, filter_holder: Optional[dict] = None):
+        """Create the manager.
+
+        *filter_holder* is an optional shared dict of live filter
+        overrides (``required_hits``, ``decay_delay``, ``remove_delay``)
+        written by the UI; missing keys fall back to config defaults.
+        """
         self._results: dict[tuple[str, str], Result] = {}
+        self._filters = filter_holder if filter_holder is not None else {}
         self._lock = threading.Lock()
         self._version = 0  # bumped on every mutation (UI refresh throttling)
 
@@ -135,7 +142,10 @@ class ResultsManager:
                 result.last_seen = now
                 if bbox:
                     result.bbox = bbox
-                return result if result.hits >= TEXT_REQUIRED_HITS else None
+                required_hits = self._filters.get(
+                    "required_hits", TEXT_REQUIRED_HITS,
+                )
+                return result if result.hits >= required_hits else None
 
             result = Result(
                 type="TXT",
@@ -149,7 +159,9 @@ class ResultsManager:
             self._results[key] = result
             logger.debug(
                 "Text sighting %d/%d: %r",
-                result.hits, TEXT_REQUIRED_HITS, value,
+                result.hits,
+                self._filters.get("required_hits", TEXT_REQUIRED_HITS),
+                value,
             )
             return None  # Requires another sighting to appear
 
@@ -172,14 +184,16 @@ class ResultsManager:
         """
         now = time.time()
         to_remove = []
+        decay_delay = self._filters.get("decay_delay", CONFIDENCE_DECAY_DELAY)
+        remove_delay = self._filters.get("remove_delay", CONFIDENCE_REMOVE_DELAY)
 
         with self._lock:
             for key, result in self._results.items():
                 elapsed = now - result.last_seen
-                if elapsed > CONFIDENCE_REMOVE_DELAY:
+                if elapsed > remove_delay:
                     to_remove.append(key)
-                elif elapsed > CONFIDENCE_DECAY_DELAY:
-                    decay_amount = int((elapsed - CONFIDENCE_DECAY_DELAY) / 2) + 1
+                elif elapsed > decay_delay:
+                    decay_amount = int((elapsed - decay_delay) / 2) + 1
                     result.confidence = max(0, result.confidence - decay_amount)
 
             if to_remove:

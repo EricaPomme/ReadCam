@@ -1,14 +1,14 @@
 """Camera discovery and background capture thread."""
 
 import logging
-import os
 import queue
 import subprocess
 import threading
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional
+
+import sys
 
 import cv2
 
@@ -20,18 +20,22 @@ from .decoders.zxing_decoder import ZXingDecoder
 logger = logging.getLogger(__name__)
 
 
-@contextmanager
-def _suppress_opencv_stderr():
-    """Temporarily redirect stderr to suppress OpenCV C++ noise."""
-    stderr_fd = os.dup(2)
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    os.dup2(devnull, 2)
-    os.close(devnull)
-    try:
-        yield
-    finally:
-        os.dup2(stderr_fd, 2)
-        os.close(stderr_fd)
+def _camera_backend() -> int:
+    """Preferred OpenCV capture backend for this platform.
+
+    Windows: DirectShow (CAP_DSHOW) opens in well under a second and
+    tolerates in-process re-opens; the default MSMF backend is slow
+    (tens of seconds) and known to hard-crash on device switches.
+    """
+    if sys.platform.startswith("win"):
+        return cv2.CAP_DSHOW
+    return cv2.CAP_ANY
+
+
+# Serialises all camera device open/probe/release operations. Windows
+# DirectShow drivers can fault when several handles race on the device,
+# and concurrent probes must not interleave.
+_camera_op_lock = threading.RLock()
 import numpy as np
 
 from .config import DEFAULT_FRAME_INTERVAL
@@ -60,13 +64,34 @@ class CameraDiscovery:
     MAX_PROBE = 10
 
     @classmethod
+    def quick_indices(cls) -> list[CameraInfo]:
+        """Return candidate camera indices without touching any device.
+
+        Instant, lazy alternative to :meth:`list_cameras`: lists indices
+        0..MAX_PROBE-1 with generic names so the UI can populate a
+        selector immediately. Friendly names are resolved lazily once a
+        camera is actually opened.
+        """
+        return [
+            CameraInfo(index=i, name=f"Camera {i}")
+            for i in range(cls.MAX_PROBE)
+        ]
+
+    @classmethod
     def list_cameras(cls) -> list[CameraInfo]:
-        """Return all detected cameras with their names."""
+        """Return all detected cameras with their names (opens devices).
+
+        Slow (opens each candidate index); the UI only calls this via
+        the Refresh button in a background thread. Note failed opens
+        emit one OpenCV WARN line on stderr each -- informative, and
+        far preferable to the fd-level stderr redirection this module
+        used previously (which broke console logging).
+        """
         cameras = []
         logger.debug("Probing camera indices 0-%d...", cls.MAX_PROBE - 1)
-        with _suppress_opencv_stderr():
-            for i in range(cls.MAX_PROBE):
-                cap = cv2.VideoCapture(i, cv2.CAP_ANY)
+        for i in range(cls.MAX_PROBE):
+            with _camera_op_lock:
+                cap = cv2.VideoCapture(i, _camera_backend())
                 if cap.isOpened():
                     name = cls._get_camera_name(i)
                     logger.info("Found camera [%d] %s", i, name)
@@ -140,10 +165,16 @@ class CaptureThread(threading.Thread):
         ocr_interval_ms: int = 1500,
         ocr_interval_holder: Optional[dict] = None,
         auto_holder: Optional[dict] = None,
+        camera_index_holder: Optional[dict] = None,
         debug: bool = False,
     ):
         super().__init__(name="capture", daemon=True)
         self.camera_index = camera_index
+        # Shared desired camera index; the thread re-opens when it changes
+        self.camera_index_holder = (
+            camera_index_holder if camera_index_holder is not None
+            else {"index": camera_index}
+        )
         self.frame_queue = frame_queue
         self.ocr_queue = ocr_queue
         self.pause_event = pause_event
@@ -165,86 +196,193 @@ class CaptureThread(threading.Thread):
         self._fps_timer = time.time()
         self.current_fps = 0.0
         self._camera_name: Optional[str] = None
+        self._open_failed_logged = False
+        self._read_failures = 0
+        self._open_attempts = 0
+
+        # UI-visible state (plain attributes; GIL-safe reads)
+        self.connected = False
+        self.open_failed = False
+        self.gave_up = False
 
     def run(self) -> None:
         """Main capture loop."""
-        logger.info("Opening camera %d...", self.camera_index)
-        self._cap = cv2.VideoCapture(self.camera_index)
-        if not self._cap.isOpened():
-            logger.error("Failed to open camera %d", self.camera_index)
-            return
-
-        width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        logger.info(
-            "Camera %d opened (%dx%d); capture loop started "
-            "(frame interval %.0f ms, OCR interval %.0f ms)",
-            self.camera_index, width, height,
-            self.frame_interval * 1000, self.ocr_interval * 1000,
-        )
-
         while not self.stop_event.is_set():
+            # Live camera switching: re-open when the desired index changes
+            desired = self.camera_index_holder.get("index")
+            if desired != self.camera_index:
+                logger.info(
+                    "Camera switch requested: %d -> %d",
+                    self.camera_index, desired,
+                )
+                self._release_camera()
+                self.camera_index = desired
+                self._camera_name = None  # re-resolve on next access
+                self._open_failed_logged = False
+                self._open_attempts = 0
+                self.open_failed = False
+                self.gave_up = False
+                self.connected = False
+                # Drain queues so stale frames from the previous
+                # camera never render or get OCR'd.
+                self._drain_queue(self.frame_queue)
+                self._drain_queue(self.ocr_queue)
+
+            if self._cap is None:
+                # Try a few times, then give up until the selection
+                # changes -- retrying forever against a dead index just
+                # hammers the device stack and spams the log.
+                if self._open_attempts < 3:
+                    self._open_attempts += 1
+                    if self._open_camera(self.camera_index):
+                        self.connected = True
+                        self.open_failed = False
+                        self.gave_up = False
+                        self._open_failed_logged = False
+                        self._fps_counter = 0
+                        self._fps_timer = time.time()
+                    else:
+                        self.open_failed = True
+                        if not self._open_failed_logged:
+                            logger.error(
+                                "Failed to open camera %d; %d more attempt(s) "
+                                "before giving up",
+                                self.camera_index, 3 - self._open_attempts,
+                            )
+                            self._open_failed_logged = True
+                        time.sleep(1.0)
+                    continue
+                # Given up: idle cheaply until a new selection arrives
+                self.gave_up = True
+                time.sleep(0.2)
+                continue
+
             if self.pause_event.is_set():
                 time.sleep(0.05)
                 continue
 
-            ret, frame = self._cap.read()
+            try:
+                ret, frame = self._cap.read()
+            except Exception:
+                logger.exception("Frame read raised; re-opening camera")
+                self._release_camera()
+                continue
             if not ret:
-                logger.warning("Frame read failed; retrying")
+                self._read_failures += 1
+                logger.warning(
+                    "Frame read failed (%d); retrying", self._read_failures,
+                )
+                if self._read_failures >= 10:
+                    logger.error(
+                        "Camera %d unreadable; re-opening", self.camera_index,
+                    )
+                    self._release_camera()
+                    self._read_failures = 0
                 time.sleep(0.05)
                 continue
+            self._read_failures = 0
 
-            # Fast decode: run zbar on the frame (auto mode only)
-            zbar_results = []
-            if self.auto_holder.get("enabled"):
-                zbar_results = self._decode_zbar(frame)
-                if zbar_results:
-                    for zr in zbar_results:
-                        logger.info(
-                            "zbar: %s %r (quality=%d)",
-                            zr.type, zr.data, zr.quality,
-                        )
-            else:
-                logger.debug("Auto-scan disabled; skipping zbar decode")
-
-            # Push to UI queue (non-blocking, drop if lagging)
             try:
-                self.frame_queue.put_nowait((frame, zbar_results))
-            except queue.Full:
-                logger.debug("frame_queue full; dropped frame")
+                # Fast decode: run zbar on the frame (auto mode only)
+                zbar_results = []
+                if self.auto_holder.get("enabled"):
+                    zbar_results = self._decode_zbar(frame)
+                    if zbar_results:
+                        for zr in zbar_results:
+                            logger.info(
+                                "zbar: %s %r (quality=%d)",
+                                zr.type, zr.data, zr.quality,
+                            )
+                else:
+                    logger.debug("Auto-scan disabled; skipping zbar decode")
 
-            # Periodically push a frame to the OCR pipeline (auto mode)
-            now = time.time()
-            if self.auto_holder.get("enabled") and now - self._last_ocr_time >= self.ocr_interval:
-                self._last_ocr_time = now
-                # Pick up adaptive interval updates from the OCR thread
-                adaptive_ms = self.ocr_interval_holder.get("ms")
-                if adaptive_ms and abs(adaptive_ms / 1000.0 - self.ocr_interval) > 0.001:
-                    self.ocr_interval = adaptive_ms / 1000.0
-                    logger.info(
-                        "Adaptive OCR interval updated to %.0f ms",
-                        adaptive_ms,
-                    )
+                # Push to UI queue (non-blocking, drop if lagging)
                 try:
-                    self.ocr_queue.put_nowait(frame.copy())
-                    logger.debug("Pushed frame to OCR queue")
+                    self.frame_queue.put_nowait((frame, zbar_results))
                 except queue.Full:
-                    logger.debug("ocr_queue full; dropped OCR frame")
+                    logger.debug("frame_queue full; dropped frame")
 
-            # Track FPS
-            self._fps_counter += 1
-            elapsed = time.time() - self._fps_timer
-            if elapsed >= 1.0:
-                self.current_fps = self._fps_counter / elapsed
-                logger.debug("Capture FPS: %.1f", self.current_fps)
-                self._fps_counter = 0
-                self._fps_timer = time.time()
+                # Periodically push a frame to the OCR pipeline (auto mode)
+                now = time.time()
+                if self.auto_holder.get("enabled") and now - self._last_ocr_time >= self.ocr_interval:
+                    self._last_ocr_time = now
+                    # Pick up adaptive interval updates from the OCR thread
+                    adaptive_ms = self.ocr_interval_holder.get("ms")
+                    if adaptive_ms and abs(adaptive_ms / 1000.0 - self.ocr_interval) > 0.001:
+                        self.ocr_interval = adaptive_ms / 1000.0
+                        logger.info(
+                            "Adaptive OCR interval updated to %.0f ms",
+                            adaptive_ms,
+                        )
+                    try:
+                        self.ocr_queue.put_nowait(frame.copy())
+                        logger.debug("Pushed frame to OCR queue")
+                    except queue.Full:
+                        logger.debug("ocr_queue full; dropped OCR frame")
 
-            # Throttle
-            time.sleep(self.frame_interval)
+                # Track FPS
+                self._fps_counter += 1
+                elapsed = time.time() - self._fps_timer
+                if elapsed >= 1.0:
+                    self.current_fps = self._fps_counter / elapsed
+                    logger.debug("Capture FPS: %.1f", self.current_fps)
+                    self._fps_counter = 0
+                    self._fps_timer = time.time()
 
-        self._cap.release()
+                # Throttle
+                time.sleep(self.frame_interval)
+            except Exception:
+                logger.exception(
+                    "Capture loop error; releasing camera %d and retrying",
+                    self.camera_index,
+                )
+                self._release_camera()
+                self._open_attempts = 0
+                self.connected = False
+                time.sleep(0.5)
+
+        self._release_camera()
         logger.info("Camera %d released; capture thread exiting", self.camera_index)
+
+    def _open_camera(self, index: int) -> bool:
+        """Open the camera at *index*; returns True on success."""
+        logger.info("Opening camera %d...", index)
+        with _camera_op_lock:
+            self._cap = cv2.VideoCapture(index, _camera_backend())
+            if not self._cap.isOpened():
+                self._cap.release()
+                self._cap = None
+                return False
+
+            width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        logger.info(
+            "Camera %d opened (%dx%d)",
+            index, width, height,
+        )
+        # Resolve the friendly name once per open (may shell out to ffmpeg)
+        self._camera_name = CameraDiscovery._get_camera_name(index)
+        logger.info("Camera %d name: %s", index, self._camera_name)
+        return True
+
+    def _release_camera(self) -> None:
+        """Release the current camera, if any."""
+        with _camera_op_lock:
+            if self._cap is not None:
+                try:
+                    self._cap.release()
+                except Exception:
+                    logger.debug("Error releasing camera", exc_info=True)
+                self._cap = None
+
+    @staticmethod
+    def _drain_queue(q: queue.Queue) -> None:
+        """Empty a queue without blocking (drop stale items)."""
+        try:
+            while True:
+                q.get_nowait()
+        except queue.Empty:
+            pass
 
     def _decode_zbar(self, frame: np.ndarray) -> list[ZBarResult]:
         """Run zbar barcode/QR decoding on the frame."""
@@ -299,6 +437,11 @@ class CaptureThread(threading.Thread):
                 self._camera_name = f"Camera {self.camera_index}"
         return self._camera_name
 
+    @property
+    def current_index_name(self) -> str:
+        """Human-readable name of the active camera (cheap; no probing)."""
+        return self._camera_name or f"Camera {self.camera_index}"
+
 
 class OCRThread(threading.Thread):
     """Background thread for optical character recognition.
@@ -316,6 +459,7 @@ class OCRThread(threading.Thread):
         roi_holder: Optional[dict] = None,
         ocr_interval_holder: Optional[dict] = None,
         auto_holder: Optional[dict] = None,
+        filter_holder: Optional[dict] = None,
         debug: bool = False,
     ):
         super().__init__(name="ocr", daemon=True)
@@ -327,6 +471,10 @@ class OCRThread(threading.Thread):
         self.roi_holder = roi_holder if roi_holder is not None else {"roi": None}
         # Shared auto-scan toggle; False drops whole-frame OCR jobs
         self.auto_holder = auto_holder if auto_holder is not None else {"enabled": True}
+        # Shared live filter thresholds written by the UI sliders
+        self.filter_holder = (
+            filter_holder if filter_holder is not None else {}
+        )
         # Shared with the capture thread, which applies our adaptive interval
         self.ocr_interval_holder = (
             ocr_interval_holder if ocr_interval_holder is not None
@@ -339,7 +487,7 @@ class OCRThread(threading.Thread):
     def run(self) -> None:
         """Main OCR processing loop."""
         logger.info("OCR thread starting...")
-        self._decoder = OCRDecoder(debug=self.debug)
+        self._decoder = OCRDecoder(filter_holder=self.filter_holder, debug=self.debug)
         self._zxing = ZXingDecoder(debug=self.debug)
         self._zbar = ZBarDecoder(debug=self.debug)
 
