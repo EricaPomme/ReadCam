@@ -163,16 +163,18 @@ class PreviewPanel(ctk.CTkFrame):
         self.image_label.configure(image=ctk_image, text="")
         self._current_ctk_image = ctk_image
 
-        # Remember the mapping for mouse-coordinate conversion
-        img_w, img_h = pil_image.size
-        label_w = self.image_label.winfo_width()
-        label_h = self.image_label.winfo_height()
-
-        # Only trust the mapping once the widget is realised; a stale
-        # or zero size would produce a bogus offset.
-        if label_w > 10 and label_h > 10:
-            self._render_scale = img_w / frame.shape[1]
-            self._render_offset = ((label_w - img_w) // 2, (label_h - img_h) // 2)
+        # Remember the mapping for mouse-coordinate conversion.
+        # CTk displays the photo on the *inner* tkinter.Label (scaled by
+        # the widget DPI factor), and that inner label receives mouse
+        # events -- so the drawn image size comes from the inner label,
+        # not from our PIL image or the outer widget.
+        inner = getattr(self.image_label, "_label", None)
+        if inner is not None:
+            inner_w = inner.winfo_width()
+            inner_h = inner.winfo_height()
+            if inner_w > 10 and inner_h > 10:
+                self._render_scale = inner_w / frame.shape[1]
+                self._render_offset = (0, 0)
 
     def _resize_to_fit(self, image: Image.Image) -> Image.Image:
         """Scale the image to fit the preview area while preserving aspect ratio."""
@@ -213,14 +215,32 @@ class PreviewPanel(ctk.CTkFrame):
         return self._last_frame
 
     def _to_frame_coords(self, event) -> Optional[tuple]:
-        """Convert a label-widget mouse event to frame coordinates."""
+        """Convert a mouse event to frame coordinates.
+
+        Events may arrive from the inner tkinter.Label (which displays
+        the image and fills it exactly) or from the surrounding canvas
+        (clicks that miss the image). Coordinates are normalised to be
+        relative to the drawn image before applying the scale.
+        """
         frame = self._last_frame
         if frame is None:
             return None
 
-        off_x, off_y = self._render_offset
-        x = int((event.x - off_x) / self._render_scale)
-        y = int((event.y - off_y) / self._render_scale)
+        inner = getattr(self.image_label, "_label", None)
+        canvas = getattr(self.image_label, "_canvas", None)
+
+        if inner is not None and event.widget is inner:
+            # Already relative to the drawn image
+            ex, ey = event.x, event.y
+        elif canvas is not None and event.widget is canvas and inner is not None:
+            # Shift by the inner label's position within the canvas
+            ex = event.x - inner.winfo_x()
+            ey = event.y - inner.winfo_y()
+        else:
+            ex, ey = event.x, event.y
+
+        x = int(ex / self._render_scale)
+        y = int(ey / self._render_scale)
 
         fh, fw = frame.shape[:2]
         return (max(0, min(x, fw - 1)), max(0, min(y, fh - 1)))
