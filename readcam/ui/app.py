@@ -60,9 +60,11 @@ class ReadCamApp(ctk.CTk):
         self.title(UI_TITLE)
         self.minsize(UI_MIN_WIDTH, UI_MIN_HEIGHT)
 
-        # Grid: column 0 = toolbar / preview / filters, column 1 = results
+        # Grid: column 0 = toolbar / preview / filters, column 1 = drag
+        # sash, column 2 = results
         self.grid_columnconfigure(0, weight=0, minsize=UI_PREVIEW_MIN_WIDTH)
-        self.grid_columnconfigure(1, weight=1, minsize=UI_RESULTS_MIN_WIDTH)
+        self.grid_columnconfigure(1, weight=0, minsize=4)
+        self.grid_columnconfigure(2, weight=1, minsize=UI_RESULTS_MIN_WIDTH)
         self.grid_rowconfigure(0, weight=0)  # camera toolbar
         self.grid_rowconfigure(1, weight=1)  # preview
         self.grid_rowconfigure(2, weight=0)  # filter panel
@@ -158,13 +160,24 @@ class ReadCamApp(ctk.CTk):
 
         self.results_panel = ResultsPanel(self)
         self.results_panel.grid(
-            row=0, column=1, rowspan=3, padx=5, pady=5, sticky="nsew",
+            row=0, column=2, rowspan=3, padx=5, pady=5, sticky="nsew",
         )
+
+        # Drag sash between preview and results columns: dragging it
+        # changes column 0's minsize, which the gridded panels follow
+        # via sticky="ew"/"nsew".
+        self.sash = ctk.CTkFrame(
+            self, width=4, corner_radius=0, fg_color=COLOURS["border"],
+        )
+        self.sash.grid(row=0, column=1, rowspan=3, sticky="ns", pady=5)
+        self.sash.bind("<B1-Motion>", self._sash_drag)
+        self.sash.bind("<Enter>", lambda _e: self._set_sash_cursor("sb_h_double_arrow"))
+        self.sash.bind("<Leave>", lambda _e: self._set_sash_cursor(""))
 
         # Status bar: text (left) + interactive toggle buttons (right)
         self.status_bar = ctk.CTkFrame(self, fg_color="transparent")
         self.status_bar.grid(
-            row=3, column=0, columnspan=2,
+            row=3, column=0, columnspan=3,
             padx=5, pady=(0, 2),
             sticky="ew",
         )
@@ -250,6 +263,23 @@ class ReadCamApp(ctk.CTk):
         self.bind("<Escape>", lambda _e: self._on_close())
         self.bind("<Key-r>", lambda _e: self._clear_results())
         self.bind("<Key-a>", lambda _e: self._toggle_auto())
+
+    # ------------------------------------------------------------------
+    # Layout sash
+    # ------------------------------------------------------------------
+
+    def _set_sash_cursor(self, cursor: str) -> None:
+        """Show a resize cursor while hovering the sash."""
+        self.sash.configure(cursor=cursor)
+
+    def _sash_drag(self, _event) -> None:
+        """Resize column 0 (preview side) while the sash is dragged."""
+        # Pointer position relative to the window, minus a small margin
+        # so the sash itself stays visible.
+        x = self.winfo_pointerx() - self.winfo_rootx()
+        max_x = self.winfo_width() - UI_RESULTS_MIN_WIDTH - 20
+        width = max(UI_PREVIEW_MIN_WIDTH, min(int(x), max_x))
+        self.grid_columnconfigure(0, minsize=width)
 
     # ------------------------------------------------------------------
     # UI update loop (runs on the main thread via .after())
