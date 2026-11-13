@@ -274,7 +274,7 @@ class ReadCamApp(ctk.CTk):
         if not self._ocr_available:
             parts.append("OCR unavailable")
 
-        self.status_bar.configure(
+        self.status_label.configure(
             text=" \u00b7 ".join(parts) if parts else "No camera feed",
         )
 
