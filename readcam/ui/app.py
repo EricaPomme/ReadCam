@@ -343,6 +343,10 @@ class ReadCamApp(ctk.CTk):
 
     def _request_ocr_now(self) -> None:
         """Run an immediate OCR pass on the latest frame (mouse-up on ROI)."""
+        # Sync the ROI first: the update loop only does this every 50 ms,
+        # and the OCR thread may consume the pushed frame before that.
+        self.roi_holder["roi"] = self.preview_panel.selection
+
         frame = self.preview_panel.latest_frame
         if frame is None:
             return
