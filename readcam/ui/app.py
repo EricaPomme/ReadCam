@@ -69,10 +69,12 @@ class ReadCamApp(ctk.CTk):
         self.minsize(UI_MIN_WIDTH, UI_MIN_HEIGHT)
 
         # Grid: column 0 = toolbar / preview / capture / filters, column
-        # 1 = drag sash, column 2 = results
-        self.grid_columnconfigure(0, weight=0, minsize=UI_PREVIEW_MIN_WIDTH)
+        # 1 = drag sash, column 2 = results. Column 0 takes the extra
+        # space; column 2 stays at its natural (minimum) width so the
+        # results pane only grows when dragged wider via the sash.
+        self.grid_columnconfigure(0, weight=1, minsize=UI_PREVIEW_MIN_WIDTH)
         self.grid_columnconfigure(1, weight=0, minsize=4)
-        self.grid_columnconfigure(2, weight=1, minsize=UI_RESULTS_MIN_WIDTH)
+        self.grid_columnconfigure(2, weight=0, minsize=UI_RESULTS_MIN_WIDTH)
         self.grid_rowconfigure(0, weight=0)  # camera toolbar
         self.grid_rowconfigure(1, weight=1)  # preview
         self.grid_rowconfigure(2, weight=0)  # capture panel
