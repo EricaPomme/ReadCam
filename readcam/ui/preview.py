@@ -27,6 +27,78 @@ logger = logging.getLogger(__name__)
 COLOUR_SELECTION = (60, 220, 255)
 
 
+def draw_overlays(
+    display: np.ndarray,
+    zbar_results: list[ZBarResult],
+    active_results: list[Result],
+    selection_box: Optional[tuple] = None,
+) -> None:
+    """Draw detection boxes, labels, and the OCR selection box on *display*.
+
+    Shared by the live preview and capture saving, so both render the
+    identical overlay pipeline. *display* is modified in place.
+    """
+    # Zbar (QR / barcode) bounding boxes
+    for zr in zbar_results:
+        colour = _colour_for_type(zr.type)
+        if zr.points:
+            pts = np.array(zr.points, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(display, [pts], True, colour, 2)
+            label = f"{zr.type}: {truncate(zr.data, 30)}"
+            cv2.putText(
+                display, label,
+                (zr.points[0][0], zr.points[0][1] - 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2,
+            )
+        elif zr.rect:
+            x, y, w, h = zr.rect
+            cv2.rectangle(display, (x, y), (x + w, y + h), colour, 2)
+            label = f"{zr.type}: {truncate(zr.data, 30)}"
+            cv2.putText(
+                display, label, (x, y - 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2,
+            )
+
+    # OCR results that aren't already covered by zbar
+    zbar_keys = {(zr.type.upper(), zr.data) for zr in zbar_results}
+    for result in active_results:
+        if result.bbox and (result.type, result.value) not in zbar_keys:
+            x, y, w, h = result.bbox
+            colour = _colour_for_type(result.type)
+            cv2.rectangle(display, (x, y), (x + w, y + h), colour, 2)
+            label = f"{result.type}: {truncate(result.value, 30)}"
+            cv2.putText(
+                display, label, (x, y - 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2,
+            )
+
+    # Persistent selection and/or active drag box
+    if selection_box is not None:
+        x, y, w, h = selection_box
+        cv2.rectangle(display, (x, y), (x + w, y + h), COLOUR_SELECTION, 2)
+        cv2.putText(
+            display, "OCR region", (x, y - 5),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOUR_SELECTION, 2,
+        )
+
+
+def _colour_for_type(det_type: str) -> tuple[int, int, int]:
+    """Map a detection type to its BGR colour."""
+    if det_type == "QR":
+        return COLOUR_QR
+    elif det_type in (
+        "DM", "AZTEC", "SQCODE",
+        "EAN-13", "EAN-8", "UPC-A", "UPC-E",
+        "CODE128", "CODE39", "CODE93", "I2OF5",
+        "PDF417", "CODABAR", "DATABAR",
+    ):
+        return COLOUR_BARCODE
+    elif det_type == "TXT":
+        return COLOUR_TEXT
+    else:
+        return COLOUR_UNKNOWN
+
+
 class PreviewPanel(ctk.CTkFrame):
     """Panel that displays the live camera feed with detection overlays.
 
@@ -110,55 +182,7 @@ class PreviewPanel(ctk.CTkFrame):
     ) -> None:
         """Render a frame with all overlays (called on frame + on drags)."""
         display = frame.copy()
-
-        # Draw zbar (QR / barcode) bounding boxes
-        for zr in zbar_results:
-            colour = self._colour_for_type(zr.type)
-            if zr.points:
-                pts = np.array(zr.points, dtype=np.int32).reshape((-1, 1, 2))
-                cv2.polylines(display, [pts], True, colour, 2)
-                label = f"{zr.type}: {truncate(zr.data, 30)}"
-                cv2.putText(
-                    display, label,
-                    (zr.points[0][0], zr.points[0][1] - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2,
-                )
-            elif zr.rect:
-                x, y, w, h = zr.rect
-                cv2.rectangle(display, (x, y), (x + w, y + h), colour, 2)
-                label = f"{zr.type}: {truncate(zr.data, 30)}"
-                cv2.putText(
-                    display, label, (x, y - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2,
-                )
-
-        # Draw OCR results that aren't already covered by zbar
-        zbar_keys = {(zr.type.upper(), zr.data) for zr in zbar_results}
-        for result in active_results:
-            if result.bbox and (result.type, result.value) not in zbar_keys:
-                x, y, w, h = result.bbox
-                colour = self._colour_for_type(result.type)
-                cv2.rectangle(display, (x, y), (x + w, y + h), colour, 2)
-                label = f"{result.type}: {truncate(result.value, 30)}"
-                cv2.putText(
-                    display, label, (x, y - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 2,
-                )
-
-        # Draw the persistent selection and/or the active drag box
-        if self._dragging:
-            x0, y0 = self._drag_start
-            x1, y1 = self._drag_current
-            box = (min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
-        else:
-            box = self._selection
-        if box is not None:
-            x, y, w, h = box
-            cv2.rectangle(display, (x, y), (x + w, y + h), COLOUR_SELECTION, 2)
-            cv2.putText(
-                display, "OCR region", (x, y - 5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOUR_SELECTION, 2,
-            )
+        draw_overlays(display, zbar_results, active_results, self._selection_box())
 
         # Convert BGR OpenCV -> RGB PIL, scale to fit, and display on a
         # single reusable PhotoImage. Creating a new image per frame
@@ -383,19 +407,19 @@ class PreviewPanel(ctk.CTkFrame):
     # Helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _colour_for_type(det_type: str) -> tuple[int, int, int]:
-        """Map a detection type to its BGR colour."""
-        if det_type == "QR":
-            return COLOUR_QR
-        elif det_type in (
-            "DM", "AZTEC", "SQCODE",
-            "EAN-13", "EAN-8", "UPC-A", "UPC-E",
-            "CODE128", "CODE39", "CODE93", "I2OF5",
-            "PDF417", "CODABAR", "DATABAR",
-        ):
-            return COLOUR_BARCODE
-        elif det_type == "TXT":
-            return COLOUR_TEXT
-        else:
-            return COLOUR_UNKNOWN
+    def _selection_box(self) -> Optional[tuple]:
+        """The active drag box or the persisted selection, if any."""
+        if self._dragging:
+            x0, y0 = self._drag_start
+            x1, y1 = self._drag_current
+            return (min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
+        return self._selection
+
+    def render_inputs(self) -> tuple[Optional[np.ndarray], list, list]:
+        """The cached frame, zbar results, and active results.
+
+        Capture saving uses these to render the identical overlay
+        pipeline as the preview, without keeping a second copy of the
+        state in the app.
+        """
+        return self._last_frame, self._last_zbar, self._last_active

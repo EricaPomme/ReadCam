@@ -49,6 +49,11 @@ Dark mode, green accent. Bounding boxes drawn with OpenCV on the frame before PI
 - Orange: text (OCR)
 - Grey: unknown/unrecognised
 
+### Capture Saving
+- **Capture panel** below the preview (row 2): clickable output path label (defaults to `~`, doubles as the directory chooser), Disk (save to disk), Clip (copy to clipboard), and a BB checkbox (include bounding boxes in the output).
+- Disk saves `ReadCam_YYYY-MM-DD_HH-MM-SS.png` (`_2`-style suffix on same-second collision); Clip uses a CF_DIB via the Win32 clipboard API and is Windows-only (disabled elsewhere).
+- Overlay drawing is shared: `preview.draw_overlays()` renders both the live preview and the BB-checked capture.
+
 ### Decoder Availability
 Both `pyzbar` (QR/barcode) and `pytesseract` (OCR) are optional. The app detects their absence at startup and shows status in the status bar. No crashes if missing.
 

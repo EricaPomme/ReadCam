@@ -12,6 +12,8 @@ Live camera scanner that detects QR codes, barcodes, and text in real time.
 - **Manual OCR region**: drag a box on the preview to OCR just that area
   (persist until the next click; works while paused)
 - Results list with confidence tracking -- **click a result's badge to copy** its value
+- **Capture saving**: save the current frame to disk or copy it to the
+  clipboard as a PNG; optionally include bounding boxes and labels
 - Pause/resume scanning (Space bar)
 - Automatic confidence decay -- stale results fade and disappear
 
@@ -119,10 +121,27 @@ until you drag a selection box on the preview. The status bar shows a
 toggle buttons, so the mode can be switched at any time while running.
 Dragging still triggers an immediate OCR pass on mouse-up.
 
+### Capture saving
+
+The panel below the preview saves or copies the current frame:
+
+- **Output path**: the directory captures are written to (defaults to
+  `~`). Clicking the path opens a directory chooser.
+- **Disk**: saves the current frame as
+  `ReadCam_YYYY-MM-DD_HH-MM-SS.png` in the output directory (a
+  `_2`-style suffix is appended on a same-second collision).
+- **Clip**: copies the current frame image to the clipboard.
+- **BB**: when checked, bounding boxes and labels are included in the
+  captured output; unchecked, the raw frame is captured.
+
+> **Note:** Clipboard image capture (**Clip**) is only implemented for
+> Windows (CF_DIB). On non-Windows platforms the button is disabled --
+> not yet implemented.
+
 Logged events include: camera discovery, device open/release, zbar
 barcode/QR detections, OCR detections (with confidence and timing),
 new results entering the list, stale result removal, clipboard copies,
-pause/resume, and shutdown.
+capture saves, pause/resume, and shutdown.
 
 ## Keyboard Shortcuts
 
@@ -166,6 +185,7 @@ readcam/
     __main__.py       # python -m readcam
     cli.py            # Argument parsing
     config.py         # Defaults and constants
+    capture.py        # Capture saving: PNG output, clipboard image
     camera.py         # Camera discovery, CaptureThread, OCRThread
     detector.py       # Text region detection via contours
     results.py        # ResultsManager (dedup, confidence, decay)
@@ -178,6 +198,7 @@ readcam/
       theme.py        # CTk colours and fonts
       app.py          # Main application window
       preview.py      # Camera preview + overlay painting
+      capture_panel.py # Capture saving panel
       results_panel.py # Scrollable results list
 ```
 

@@ -7,6 +7,7 @@ import time
 from typing import Optional
 
 import customtkinter as ctk
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ def _log_thread_exception(args) -> None:
 
 threading.excepthook = _log_thread_exception
 
+from ..capture import copy_image_to_clipboard, save_frame
 from ..camera import CaptureThread, CameraDiscovery, OCRThread
 from ..config import (
     DEFAULT_FLIP,
@@ -37,8 +39,10 @@ from ..config import (
 from ..decoders.ocr_decoder import OCRDecoder
 from ..decoders.zbar_decoder import ZBarDecoder
 from ..results import ResultsManager
+from ..util import log_event
+from .capture_panel import CapturePanel
 from .filter_panel import FilterPanel
-from .preview import PreviewPanel
+from .preview import PreviewPanel, draw_overlays
 from .results_panel import ResultsPanel
 from .theme import COLOURS, FONTS, setup_theme
 
@@ -64,15 +68,16 @@ class ReadCamApp(ctk.CTk):
         self.title(UI_TITLE)
         self.minsize(UI_MIN_WIDTH, UI_MIN_HEIGHT)
 
-        # Grid: column 0 = toolbar / preview / filters, column 1 = drag
-        # sash, column 2 = results
+        # Grid: column 0 = toolbar / preview / capture / filters, column
+        # 1 = drag sash, column 2 = results
         self.grid_columnconfigure(0, weight=0, minsize=UI_PREVIEW_MIN_WIDTH)
         self.grid_columnconfigure(1, weight=0, minsize=4)
         self.grid_columnconfigure(2, weight=1, minsize=UI_RESULTS_MIN_WIDTH)
         self.grid_rowconfigure(0, weight=0)  # camera toolbar
         self.grid_rowconfigure(1, weight=1)  # preview
-        self.grid_rowconfigure(2, weight=0)  # filter panel
-        self.grid_rowconfigure(3, weight=0)  # status bar
+        self.grid_rowconfigure(2, weight=0)  # capture panel
+        self.grid_rowconfigure(3, weight=0)  # filter panel
+        self.grid_rowconfigure(4, weight=0)  # status bar
 
         # Configuration
         self.camera_index = camera_index
@@ -107,6 +112,9 @@ class ReadCamApp(ctk.CTk):
         # State
         self._latest_frame: Optional = None
         self._latest_zbar: list = []
+        # Transient status-bar message (capture feedback) with expiry
+        self._status_message: str = ""
+        self._status_message_until: float = 0.0
 
         # Decoder availability (checked once at startup)
         self._ocr_available = OCRDecoder._check_available()
@@ -179,16 +187,23 @@ class ReadCamApp(ctk.CTk):
         )
         self.preview_panel.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
 
+        self.capture_panel = CapturePanel(
+            self,
+            on_disk=self._on_capture_disk,
+            on_clip=self._on_capture_clip,
+        )
+        self.capture_panel.grid(row=2, column=0, padx=5, pady=(0, 5), sticky="ew")
+
         self.filter_panel = FilterPanel(
             self,
             filters=self.filter_holder,
             on_change_end=self._on_filters_changed,
         )
-        self.filter_panel.grid(row=2, column=0, padx=5, pady=(0, 5), sticky="ew")
+        self.filter_panel.grid(row=3, column=0, padx=5, pady=(0, 5), sticky="ew")
 
         self.results_panel = ResultsPanel(self)
         self.results_panel.grid(
-            row=0, column=2, rowspan=3, padx=5, pady=5, sticky="nsew",
+            row=0, column=2, rowspan=4, padx=5, pady=5, sticky="nsew",
         )
 
         # Drag sash between preview and results columns: dragging it
@@ -197,7 +212,7 @@ class ReadCamApp(ctk.CTk):
         self.sash = ctk.CTkFrame(
             self, width=4, corner_radius=0, fg_color=COLOURS["border"],
         )
-        self.sash.grid(row=0, column=1, rowspan=3, sticky="ns", pady=5)
+        self.sash.grid(row=0, column=1, rowspan=4, sticky="ns", pady=5)
         self.sash.bind("<ButtonPress-1>", self._sash_drag_start)
         self.sash.bind("<B1-Motion>", self._sash_drag)
         self.sash.bind("<ButtonRelease-1>", self._sash_drag_end)
@@ -207,7 +222,7 @@ class ReadCamApp(ctk.CTk):
         # Status bar: text (left) + interactive toggle buttons (right)
         self.status_bar = ctk.CTkFrame(self, fg_color="transparent")
         self.status_bar.grid(
-            row=3, column=0, columnspan=3,
+            row=4, column=0, columnspan=3,
             padx=5, pady=(0, 2),
             sticky="ew",
         )
@@ -426,6 +441,13 @@ class ReadCamApp(ctk.CTk):
         self._sync_camera_failure()
         parts: list[str] = []
 
+        # Transient capture feedback takes precedence while active
+        if self._status_message and time.time() < self._status_message_until:
+            parts.append(self._status_message)
+        else:
+            if self._status_message:
+                self._status_message = ""
+
         # Camera status
         t = self.capture_thread
         if t.connected:
@@ -563,6 +585,53 @@ class ReadCamApp(ctk.CTk):
         """Manual ROI selection committed: clear stale results, then OCR."""
         self._clear_results()
         self._request_ocr_now()
+
+    # ------------------------------------------------------------------
+    # Capture saving
+    # ------------------------------------------------------------------
+
+    def _flash_status(self, message: str) -> None:
+        """Show a transient message in the status bar (5 s)."""
+        self._status_message = message
+        self._status_message_until = time.time() + 5.0
+        logger.info("Status: %s", message)
+
+    def _capture_frame(self) -> Optional[np.ndarray]:
+        """Compose the frame to capture: raw, or with overlays if BB is on."""
+        frame, zbar, active = self.preview_panel.render_inputs()
+        if frame is None:
+            return None
+        if not self.capture_panel.include_boxes.get():
+            return frame.copy()
+        display = frame.copy()
+        draw_overlays(display, zbar, active, self.preview_panel.selection)
+        return display
+
+    def _on_capture_disk(self) -> None:
+        """Save the current frame as a PNG in the output directory."""
+        frame = self._capture_frame()
+        if frame is None:
+            self._flash_status("No camera feed to capture")
+            return
+        try:
+            path = save_frame(frame, self.capture_panel.output_dir)
+            log_event("Capture saved to %s", path)
+            self._flash_status(f"Saved to {path}")
+        except Exception as exc:
+            logger.exception("Capture save failed")
+            self._flash_status(f"Save failed: {exc}")
+
+    def _on_capture_clip(self) -> None:
+        """Copy the current frame image to the clipboard."""
+        frame = self._capture_frame()
+        if frame is None:
+            self._flash_status("No camera feed to capture")
+            return
+        if copy_image_to_clipboard(frame):
+            log_event("Capture copied to clipboard")
+            self._flash_status("Copied to clipboard")
+        else:
+            self._flash_status("Clipboard image copy failed (not supported off Windows)")
 
     def _request_ocr_now(self) -> None:
         """Run an immediate OCR pass on the latest frame (mouse-up on ROI)."""
