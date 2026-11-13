@@ -12,6 +12,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import urllib.request
 import zipfile
@@ -79,6 +80,49 @@ def configure_tesseract() -> bool:
             return False
 
     return False
+
+
+def find_ffmpeg() -> str:
+    """Locate an ffmpeg executable.
+
+    Only checks PATH (ffmpeg has no fixed install layout worth
+    probing). Returns the path, or an empty string if not found.
+    """
+    return shutil.which("ffmpeg") or ""
+
+
+def cmd_install_ffmpeg() -> int:
+    """CLI handler for ``readcam install-ffmpeg``.
+
+    ffmpeg cannot be auto-installed -- we only check and give guidance.
+    It is optional: ReadCam uses it to resolve camera names and to
+    query each camera's supported capture resolutions.
+    """
+    exe = find_ffmpeg()
+    if exe:
+        try:
+            result = subprocess.run(
+                [exe, "-version"], capture_output=True, text=True, timeout=10,
+            )
+            first = result.stdout.splitlines()[0] if result.stdout else exe
+            sys.stdout.write(f"ffmpeg is available ({first}).\n")
+            return 0
+        except Exception:
+            sys.stdout.write(f"ffmpeg found at {exe}, but it did not run.\n")
+            return 1
+
+    sys.stdout.write(
+        "ffmpeg is not installed.\n\n"
+        "It is optional: ReadCam uses it for camera names and to query\n"
+        "each camera's supported capture resolutions. Without it the\n"
+        "resolution dropdown falls back to a fixed list.\n\n"
+        "Install it manually:\n"
+        "  Windows:  winget install ffmpeg\n"
+        "            or https://www.gyan.dev/ffmpeg/builds/\n"
+        "  macOS:    brew install ffmpeg\n"
+        "  Linux:    apt install ffmpeg\n"
+    )
+    return 1
 
 
 def _pyzbar_dir() -> Path:

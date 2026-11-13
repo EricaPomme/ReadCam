@@ -57,6 +57,11 @@ COLOUR_MODES = [COLOUR_MODE_COLOUR, COLOUR_MODE_GREYSCALE, COLOUR_MODE_1BIT]
 RESOLUTION_AUTO = "Auto"
 RESOLUTIONS = [RESOLUTION_AUTO, "640x480", "1280x720", "1920x1080"]
 
+# "Auto" resolution tiers: the first tier present in the camera's
+# probed capability list is used, degrading 1080p -> 720p -> 480p;
+# none present means the camera's driver default (640x480 on DSHOW).
+RESOLUTION_AUTO_TIERS = ["1920x1080", "1280x720", "640x480"]
+
 # Bounding box colours (BGR for OpenCV)
 COLOUR_QR = (46, 204, 113)          # Green
 COLOUR_BARCODE = (219, 152, 52)     # Blue

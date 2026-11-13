@@ -22,6 +22,7 @@ from ..config import (
     IMAGE_ZOOM,
     OCR_DENOISE,
     OCR_ENABLED,
+    RESOLUTION_AUTO,
     RESOLUTIONS,
     TEXT_MIN_ALNUM_RATIO,
     TEXT_MIN_CONFIDENCE,
@@ -106,6 +107,10 @@ class FilterPanel(ctk.CTkFrame):
             else {"enabled": OCR_ENABLED}
         )
         self.on_change_end = on_change_end
+        # Display label for the resolution menu's "Auto" entry, updated
+        # when the camera's probed capabilities land (the holder itself
+        # keeps the plain "Auto" value).
+        self._auto_display = f"{RESOLUTION_AUTO} (Driver Default)"
         self._sliders: dict[str, ctk.CTkSlider] = {}
         self._labels: dict[str, ctk.CTkLabel] = {}
         self._menus: dict[str, ctk.CTkOptionMenu] = {}
@@ -206,6 +211,34 @@ class FilterPanel(ctk.CTkFrame):
         self._ocr_holder["enabled"] = enabled
         logger.info("OCR toggled %s", "on" if enabled else "off (barcodes-only)")
 
+    def set_resolution_options(
+        self, options: list[str], auto: Optional[str] = None,
+    ) -> None:
+        """Replace the resolution dropdown's choices.
+
+        Used to swap the config defaults for the probed capability list
+        of the active camera. *auto* (a concrete "WxH" mode or None)
+        sets what the "Auto" entry displays, e.g. "Auto (1920x1080)".
+        Keeps the current selection when it is still valid; otherwise
+        falls back to Auto so the capture thread never receives a
+        stale value.
+        """
+        menu = self._menus.get("resolution")
+        if menu is None:
+            return
+        self._auto_display = (
+            f"{RESOLUTION_AUTO} ({auto})" if auto
+            else f"{RESOLUTION_AUTO} (Driver Default)"
+        )
+        menu.configure(values=[self._auto_display] + list(options))
+        current = self._filters.get("resolution", RESOLUTION_AUTO)
+        if current != RESOLUTION_AUTO and current not in options:
+            current = RESOLUTION_AUTO
+            self._filters["resolution"] = current
+        menu.set(
+            self._auto_display if current == RESOLUTION_AUTO else current
+        )
+
     # ------------------------------------------------------------------
     # Layout
     # ------------------------------------------------------------------
@@ -253,13 +286,19 @@ class FilterPanel(ctk.CTkFrame):
         )
         name.grid(row=0, column=0, sticky="w")
 
+        if key == "resolution":
+            # The Auto entry gets a display label ("Auto (Driver
+            # Default)" until the probe lands); the holder keeps "Auto"
+            options = [self._auto_display] + [
+                o for o in options if o != RESOLUTION_AUTO
+            ]
         menu = ctk.CTkOptionMenu(
             row,
             values=options,
             font=FONTS["small"],
             command=lambda v, k=key: self._on_dropdown(k, v),
         )
-        menu.set(default)
+        menu.set(self._auto_display if default == RESOLUTION_AUTO else default)
         menu.grid(row=0, column=1, padx=6, sticky="ew")
         row.columnconfigure(1, weight=1)
 
@@ -320,6 +359,8 @@ class FilterPanel(ctk.CTkFrame):
 
     def _on_dropdown(self, key: str, value: str) -> None:
         """Write the new selection into the holder."""
+        if key == "resolution" and value.startswith(RESOLUTION_AUTO):
+            value = RESOLUTION_AUTO
         self._filters[key] = value
         logger.info("%s changed to %s", key, value)
 
@@ -342,7 +383,10 @@ class FilterPanel(ctk.CTkFrame):
             self._labels[key].configure(text=fmt(default))
         for key, _label, _options, default in _DROPDOWNS:
             self._filters[key] = default
-            self._menus[key].set(default)
+            if key == "resolution":
+                self._menus[key].set(self._auto_display)
+            else:
+                self._menus[key].set(default)
         for key, _label, default in _CHECKBOXES:
             self._filters[key] = default
             if default:

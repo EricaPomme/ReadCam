@@ -24,7 +24,7 @@ def _log_thread_exception(args) -> None:
 threading.excepthook = _log_thread_exception
 
 from ..capture import copy_image_to_clipboard, save_frame
-from ..camera import CaptureThread, CameraDiscovery, OCRThread
+from ..camera import CaptureThread, CameraDiscovery, OCRThread, resolve_auto_resolution
 from ..config import (
     DEFAULT_FLIP,
     DEFAULT_FRAME_INTERVAL,
@@ -124,10 +124,16 @@ class ReadCamApp(ctk.CTk):
         # Decoder availability (checked once at startup)
         self._ocr_available = OCRDecoder._check_available()
         self._zbar_available = ZBarDecoder._check_available()
+        from ..install import find_ffmpeg
+        self._ffmpeg_available = bool(find_ffmpeg())
         logger.info(
-            "Decoder availability: zbar=%s, OCR=%s",
+            "Decoder availability: zbar=%s, OCR=%s, ffmpeg=%s",
             self._zbar_available, self._ocr_available,
+            self._ffmpeg_available,
         )
+        # Cache of the last resolution probe (camera index, name), so the
+        # probed mode list is refreshed only when the camera changes
+        self._resolution_probe_key: Optional[tuple] = None
 
         # Results (shares the filter holder with the OCR thread)
         self.results_manager = ResultsManager(filter_holder=self.filter_holder)
@@ -479,6 +485,8 @@ class ReadCamApp(ctk.CTk):
 
         if not self._zbar_available:
             parts.append("zbar unavailable")
+        if not self._ffmpeg_available:
+            parts.append("ffmpeg unavailable")
         if not self.ocr_holder.get("enabled"):
             parts.append("OCR off")
         elif not self._ocr_available:
@@ -782,6 +790,44 @@ class ReadCamApp(ctk.CTk):
                 self.camera_menu.set(f"[{cam.index}] {cam.name}")
                 logger.info("Camera [%d] resolved as %r", cam.index, cam.name)
                 break
+
+        # Once the friendly name is known, probe the camera's supported
+        # capture resolutions (background) and refresh the dropdown.
+        key = (t.camera_index, t._camera_name)
+        if key != self._resolution_probe_key:
+            self._resolution_probe_key = key
+            self._probe_resolutions(t._camera_name)
+
+    def _probe_resolutions(self, camera_name: str) -> None:
+        """Query the camera's supported modes and update the dropdown.
+
+        Runs the ffmpeg DirectShow capability probe in a background
+        thread; the result swaps into the filter panel's resolution
+        menu on the UI thread. Falls back to the config defaults when
+        ffmpeg is unavailable or the probe parses nothing.
+        """
+
+        def probe() -> None:
+            resolutions = CameraDiscovery.list_resolutions(camera_name)
+            auto = resolve_auto_resolution(resolutions)
+
+            def apply() -> None:
+                # "Auto" now means this concrete mode (or the driver
+                # default when nothing tiered is available); the
+                # capture thread re-opens if it changes the mode.
+                self.filter_holder["auto_resolution"] = auto
+                if auto:
+                    logger.info(
+                        "Resolution 'Auto' resolved to %s for %r",
+                        auto, camera_name,
+                    )
+                self.filter_panel.set_resolution_options(
+                    resolutions, auto=auto,
+                )
+
+            self.after(0, apply)
+
+        threading.Thread(target=probe, daemon=True, name="resprobe").start()
 
     def _sync_camera_failure(self) -> None:
         """React to a selection that failed to open (runs on the UI thread).

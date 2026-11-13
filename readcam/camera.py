@@ -2,6 +2,7 @@
 
 import logging
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -12,7 +13,14 @@ import sys
 
 import cv2
 
-from .config import OCR_ADAPTIVE_HEADROOM, OCR_ENABLED, RESOLUTION_AUTO
+from .config import (
+    DEFAULT_FRAME_INTERVAL,
+    OCR_ADAPTIVE_HEADROOM,
+    OCR_ENABLED,
+    RESOLUTION_AUTO,
+    RESOLUTION_AUTO_TIERS,
+    RESOLUTIONS,
+)
 from .decoders.ocr_decoder import OCRDecoder
 from .decoders.zbar_decoder import ZBarDecoder
 from .decoders.zxing_decoder import ZXingDecoder
@@ -50,6 +58,20 @@ class CameraInfo:
     """Describes a detected camera device."""
     index: int
     name: str
+
+
+def resolve_auto_resolution(available: list[str]) -> Optional[str]:
+    """Pick the concrete mode "Auto" means for a camera.
+
+    Scans :data:`RESOLUTION_AUTO_TIERS` (1080p -> 720p -> 480p) against
+    the camera's probed capability list and returns the first match, or
+    ``None`` when nothing matches (caller falls back to the driver's
+    default mode).
+    """
+    for tier in RESOLUTION_AUTO_TIERS:
+        if tier in available:
+            return tier
+    return None
 
 
 @dataclass
@@ -118,36 +140,107 @@ class CameraDiscovery:
 
     @classmethod
     def _try_ffmpeg_name(cls, index: int) -> Optional[str]:
-        """Query ffmpeg DirectShow devices for a friendly name."""
+        """Query ffmpeg DirectShow devices for a friendly name.
+
+        Handles both the legacy output format (a "DirectShow video
+        devices" section header) and the newer format ("[in#0 ...]
+        \"Name\" (video)" lines with "Alternative name" entries and
+        audio devices interleaved).
+        """
         try:
             result = subprocess.run(
                 ["ffmpeg", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
                 capture_output=True, text=True, timeout=10,
             )
-            # ffmpeg lists DirectShow devices in stderr like:
-            #   "HD Webcam C920" (usb, ...
-            # Parse by scanning for device entries
-            lines = result.stderr.splitlines()
-            in_device_list = False
-            device_index = 0
-            for line in lines:
-                stripped = line.strip()
-                if "DirectShow device list" in stripped:
-                    in_device_list = True
-                    continue
-                if in_device_list and ("Alternate name" in stripped or not stripped):
-                    continue
-                if in_device_list and '"' in stripped:
-                    if device_index == index:
-                        # Extract name between quotes
-                        start = stripped.find('"')
-                        end = stripped.find('"', start + 1)
-                        if start != -1 and end != -1:
-                            return stripped[start + 1:end]
-                    device_index += 1
         except (subprocess.SubprocessError, FileNotFoundError):
-            pass
+            return None
+
+        names: list[str] = []
+        in_video_section = True  # legacy header tracking; the new
+        # format tags each line with (video)/(audio) instead
+        for line in result.stderr.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            lower = stripped.lower()
+            if "alternative name" in lower or "alternate name" in lower:
+                continue
+            if "video devices" in lower:
+                in_video_section = True
+                continue
+            if "audio devices" in lower:
+                in_video_section = False
+                continue
+            match = re.search(r'"([^"]+)"', stripped)
+            if not match:
+                continue
+            # Newer ffmpeg suffixes each entry with its kind, e.g.
+            # "Name" (video) / (audio) / (none). Audio-only devices
+            # are never capture candidates; "(none)" still is (e.g.
+            # OBS Virtual Camera). Legacy lines end with "(usb, ...)"
+            # and rely on the section header instead.
+            kind = re.search(r"\(([^()]*)\)\s*$", stripped)
+            if kind and "audio" in kind.group(1).lower():
+                continue
+            if not kind and not in_video_section:
+                continue
+            names.append(match.group(1))
+
+        if 0 <= index < len(names):
+            return names[index]
         return None
+
+    @classmethod
+    def list_resolutions(cls, camera_name: str) -> list[str]:
+        """Return the capture resolutions *camera_name* advertises.
+
+        Windows only: queries the DirectShow device capability list via
+        ffmpeg (``-list_options true``), which reports every frame size
+        the driver supports. Returns the config fallback list when
+        ffmpeg is unavailable, off Windows, or nothing can be parsed.
+        Excludes "Auto"; callers keep it pinned at the top.
+        """
+        from .install import find_ffmpeg
+
+        fallback = [r for r in RESOLUTIONS if r != RESOLUTION_AUTO]
+        if not camera_name or not sys.platform.startswith("win"):
+            return fallback
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            logger.debug("ffmpeg not found; using default resolution list")
+            return fallback
+
+        try:
+            result = subprocess.run(
+                [ffmpeg, "-hide_banner", "-list_options", "true",
+                 "-f", "dshow", "-i", f"video={camera_name}"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (subprocess.SubprocessError, FileNotFoundError, OSError) as exc:
+            logger.debug("ffmpeg resolution probe failed: %s", exc)
+            return fallback
+
+        # Capability lines carry the frame size as s=WxH, once per
+        # pixel format; dedupe into unique (width, height) pairs.
+        sizes: set[tuple[int, int]] = set()
+        for match in re.finditer(r"s=(\d+)x(\d+)", result.stderr):
+            width, height = int(match.group(1)), int(match.group(2))
+            if width >= 160 and height >= 120:
+                sizes.add((width, height))
+        if not sizes:
+            logger.debug(
+                "No DirectShow sizes parsed for camera %r", camera_name,
+            )
+            return fallback
+
+        resolutions = [
+            f"{w}x{h}" for w, h in sorted(sizes, key=lambda s: s[0] * s[1])
+        ]
+        logger.info(
+            "Camera %r supports %d resolutions: %s",
+            camera_name, len(resolutions), ", ".join(resolutions),
+        )
+        return resolutions
 
 
 class CaptureThread(threading.Thread):
@@ -215,9 +308,7 @@ class CaptureThread(threading.Thread):
             filter_holder if filter_holder is not None else {}
         )
         self._enhancer = ImageEnhancer(self.filter_holder)
-        self._current_resolution: str = self.filter_holder.get(
-            "resolution", RESOLUTION_AUTO,
-        )
+        self._current_resolution: str = self._desired_resolution()
         self.debug = debug
 
         self._cap: Optional[cv2.VideoCapture] = None
@@ -292,13 +383,11 @@ class CaptureThread(threading.Thread):
                 time.sleep(0.05)
                 continue
 
-            # Live resolution switching: re-open when the requested
-            # resolution changes. Many CAP_DSHOW cameras only honour
+            # Live resolution switching: re-open when the resolved
+            # mode changes. Many CAP_DSHOW cameras only honour
             # frame-size properties on open, so a re-open is the
             # reliable way to apply it.
-            desired_resolution = self.filter_holder.get(
-                "resolution", RESOLUTION_AUTO,
-            )
+            desired_resolution = self._desired_resolution()
             if desired_resolution != self._current_resolution:
                 logger.info(
                     "Resolution switch requested: %s -> %s",
@@ -452,6 +541,19 @@ class CaptureThread(threading.Thread):
                     logger.debug("Error releasing camera", exc_info=True)
                 self._cap = None
 
+    def _desired_resolution(self) -> str:
+        """Resolve the shared panel selection into a concrete mode.
+
+        An explicit panel choice is used as-is. "Auto" maps to the
+        tier resolved from the camera's probed capabilities (written
+        into ``filter_holder["auto_resolution"]`` by the UI), or the
+        driver default when no probe result has landed yet.
+        """
+        requested = self.filter_holder.get("resolution", RESOLUTION_AUTO)
+        if requested != RESOLUTION_AUTO:
+            return requested
+        return self.filter_holder.get("auto_resolution") or RESOLUTION_AUTO
+
     def _apply_resolution(self, resolution: str) -> None:
         """Request the requested frame size from the open camera.
 
@@ -466,6 +568,19 @@ class CaptureThread(threading.Thread):
             logger.warning("Invalid resolution %r; ignoring", resolution)
             return
         with _camera_op_lock:
+            current = (
+                int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+            )
+            # Uncompressed formats (YUY2 etc.) cannot carry high
+            # resolutions over USB bandwidth: drivers cap them at
+            # 1080p or silently scale. Switching to MJPEG unlocks the
+            # camera's native high-resolution modes (e.g. a 4K BRIO).
+            if width * height > current[0] * current[1]:
+                self._cap.set(
+                    cv2.CAP_PROP_FOURCC,
+                    cv2.VideoWriter_fourcc("M", "J", "P", "G"),
+                )
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         actual = (

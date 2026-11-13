@@ -106,6 +106,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show Tesseract installation instructions for OCR.",
     )
 
+    # --- install-ffmpeg ---
+    sub.add_parser(
+        "install-ffmpeg",
+        help="Check for ffmpeg and show installation instructions.",
+    )
+
     return parser
 
 
@@ -154,6 +160,10 @@ def entry_point() -> int:
     if command == "install-tesseract":
         from .install import cmd_install_tesseract
         return cmd_install_tesseract()
+
+    if command == "install-ffmpeg":
+        from .install import cmd_install_ffmpeg
+        return cmd_install_ffmpeg()
 
     # "scan" / "run" -- launch the UI
     try:
