@@ -147,7 +147,7 @@ class ReadCamApp(ctk.CTk):
 
         self.preview_panel = PreviewPanel(
             self,
-            on_selection_end=self._request_ocr_now,
+            on_selection_end=self._on_manual_selection_end,
         )
         self.preview_panel.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
 
@@ -465,6 +465,11 @@ class ReadCamApp(ctk.CTk):
             self.results_panel.update_results(
                 self.results_manager.get_sorted(),
             )
+        self._request_ocr_now()
+
+    def _on_manual_selection_end(self) -> None:
+        """Manual ROI selection committed: clear stale results, then OCR."""
+        self._clear_results()
         self._request_ocr_now()
 
     def _request_ocr_now(self) -> None:
