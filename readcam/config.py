@@ -7,6 +7,8 @@ DEFAULT_FRAME_INTERVAL = 50      # ms (~20 fps)
 DEFAULT_OCR_INTERVAL = 1500      # ms (run OCR every 1.5s)
 
 # Preview
+# Fallback preview size used before the label has been measured; the
+# rendered image itself scales freely (up or down) to fill the pane.
 PREVIEW_MAX_WIDTH = 640
 PREVIEW_MAX_HEIGHT = 480
 

@@ -40,6 +40,15 @@ class PreviewPanel(ctk.CTkFrame):
         super().__init__(master, **kwargs)
         self.configure(fg_color=COLOURS["card_bg"])
 
+        # Freeze the panel's requested size at its configured dimensions.
+        # The displayed image fills the pane (up *or* down), so letting
+        # the image drive the panel's request would pin the grid column
+        # at the image size and stop the layout sash from shrinking the
+        # preview. With propagation off, the sash's column minsize fully
+        # controls the width; the label fills whatever is allocated and
+        # the image recomputes to match on the next frame.
+        self.pack_propagate(False)
+
         self.on_selection_end = on_selection_end
 
         self.image_label = ctk.CTkLabel(
@@ -60,7 +69,8 @@ class PreviewPanel(ctk.CTkFrame):
         self._last_zbar: list[ZBarResult] = []
         self._last_active: list[Result] = []
 
-        # Display mapping: frame coords -> displayed pixels
+        # Display mapping: event pixels -> frame pixels, plus the
+        # letterbox offset in frame pixels
         self._render_scale = 1.0
         self._render_offset = (0, 0)
 
@@ -158,7 +168,7 @@ class PreviewPanel(ctk.CTkFrame):
         # paste() avoids that entirely.
         rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb)
-        pil_image = self._resize_to_fit(pil_image)
+        pil_image, canvas_offset, fit_scale = self._compose_display(pil_image)
 
         if (
             self._current_photo_image is None
@@ -178,21 +188,49 @@ class PreviewPanel(ctk.CTkFrame):
                 )
         self._showing_image = True
 
-        # Remember the mapping for mouse-coordinate conversion.
-        # CTk displays the photo on the *inner* tkinter.Label (scaled by
-        # the widget DPI factor), and that inner label receives mouse
-        # events -- so the drawn image size comes from the inner label,
-        # not from our PIL image or the outer widget.
+        # Remember the mapping for mouse-coordinate conversion, built
+        # from two independently measurable stages so DPI scaling can
+        # never skew one without the other:
+        #
+        #   frame --fit_scale--> canvas --display_scale--> events
+        #
+        # The canvas is the letterboxed image we just built (pure pixel
+        # arithmetic). The display scale is whatever factor CTk applies
+        # between the canvas and the inner label's event space, measured
+        # empirically as inner_width / canvas_width -- the same trick
+        # that made the pre-letterbox mapping DPI-safe. Storing the
+        # combined scale plus the letterbox offset converted into frame
+        # pixels keeps _to_frame_coords a simple two-term inverse.
         inner = getattr(self.image_label, "_label", None)
         if inner is not None:
             inner_w = inner.winfo_width()
             inner_h = inner.winfo_height()
             if inner_w > 10 and inner_h > 10:
-                self._render_scale = inner_w / frame.shape[1]
-                self._render_offset = (0, 0)
+                display_scale = inner_w / pil_image.width
+                self._render_scale = display_scale * fit_scale
+                # Offsets in whole frame pixels -- cv2 drawing and the
+                # ROI pipeline expect ints, and sub-pixel precision is
+                # meaningless at frame resolution.
+                self._render_offset = (
+                    int(round(canvas_offset[0] / fit_scale)),
+                    int(round(canvas_offset[1] / fit_scale)),
+                )
 
-    def _resize_to_fit(self, image: Image.Image) -> Image.Image:
-        """Scale the image to fit the preview area while preserving aspect ratio."""
+    def _compose_display(
+        self, image: Image.Image,
+    ) -> tuple[Image.Image, tuple[int, int], float]:
+        """Scale the frame to fill the preview label, letterboxed on black.
+
+        The frame is scaled up or down (aspect preserved) to fit the
+        label's allocated size and pasted centred onto a black canvas of
+        exactly that size. Returning a canvas that always fills the
+        label restores the "image fills the label" invariant the mouse
+        mapping relies on, and the frame's position within the canvas
+        is pure image-pixel arithmetic -- no DPI-scaled widget geometry.
+
+        Returns the display image, the frame's ``(x, y)`` offset inside
+        it (display-image pixels), and the frame-to-canvas fit scale.
+        """
         max_w, max_h = self._frame_size
 
         label_w = self.image_label.winfo_width() or max_w
@@ -202,14 +240,20 @@ class PreviewPanel(ctk.CTkFrame):
             label_w, label_h = max_w, max_h
 
         img_w, img_h = image.size
-        scale = min(label_w / img_w, label_h / img_h, 1.0)
-        new_w = int(img_w * scale)
-        new_h = int(img_h * scale)
+        scale = min(label_w / img_w, label_h / img_h)
+        new_w = max(1, int(img_w * scale))
+        new_h = max(1, int(img_h * scale))
+        fit_scale = new_w / img_w
 
         if new_w != img_w or new_h != img_h:
             image = image.resize((new_w, new_h), Image.BILINEAR)
 
-        return image
+        offset = ((label_w - new_w) // 2, (label_h - new_h) // 2)
+        if offset != (0, 0):
+            canvas = Image.new("RGB", (label_w, label_h), (0, 0, 0))
+            canvas.paste(image, offset)
+            return canvas, offset, fit_scale
+        return image, (0, 0), fit_scale
 
     # ------------------------------------------------------------------
     # Mouse handling
@@ -255,7 +299,9 @@ class PreviewPanel(ctk.CTkFrame):
         Events may arrive from the inner tkinter.Label (which displays
         the image and fills it exactly) or from the surrounding canvas
         (clicks that miss the image). Coordinates are normalised to be
-        relative to the drawn image before applying the scale.
+        relative to the drawn image, then the combined display/fit
+        scale and the letterbox offset (both recorded by ``_render``)
+        map them into frame coordinates.
         """
         frame = self._last_frame
         if frame is None:
@@ -274,8 +320,12 @@ class PreviewPanel(ctk.CTkFrame):
         else:
             ex, ey = event.x, event.y
 
-        x = int(ex / self._render_scale)
-        y = int(ey / self._render_scale)
+        # Event space -> display-image pixels -> frame pixels, via the
+        # combined display/fit scale and the letterbox offset (in frame
+        # pixels) recorded by _render.
+        off_x, off_y = self._render_offset
+        x = int(ex / self._render_scale) - off_x
+        y = int(ey / self._render_scale) - off_y
 
         fh, fw = frame.shape[:2]
         return (max(0, min(x, fw - 1)), max(0, min(y, fh - 1)))
