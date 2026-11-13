@@ -513,7 +513,12 @@ class CaptureThread(threading.Thread):
                     data = data.decode("utf-8", errors="replace")
                 else:
                     data = str(data)
-                points = getattr(sym, 'points', [])
+                # pyzbar exposes the symbol location as `polygon` (a list
+                # of Point namedtuples); there is no `points` attribute.
+                points = [
+                    (int(p.x), int(p.y))
+                    for p in (getattr(sym, 'polygon', None) or [])
+                ]
                 sym_type = getattr(sym, 'type', 'UNKNOWN')
                 # pyzbar returns a ZBarSymbol IntEnum; str() of it is the
                 # numeric value on Python 3.11+, so use .name and map it
@@ -524,7 +529,7 @@ class CaptureThread(threading.Thread):
                     data=data,
                     points=points,
                     quality=getattr(sym, 'quality', 0),
-                    rect=self._points_to_rect(points),
+                    rect=self._points_to_rect(points) or self._rect_from_sym(sym),
                 ))
             return results
         except Exception as exc:
@@ -539,6 +544,14 @@ class CaptureThread(threading.Thread):
         xs = [p[0] for p in points]
         ys = [p[1] for p in points]
         return (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+
+    @staticmethod
+    def _rect_from_sym(sym) -> Optional[tuple]:
+        """Fall back to pyzbar's Rect when no polygon is available."""
+        rect = getattr(sym, 'rect', None)
+        if rect is None:
+            return None
+        return (rect.left, rect.top, rect.width, rect.height)
 
     @property
     def camera_name(self) -> str:

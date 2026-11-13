@@ -87,13 +87,13 @@ class ZBarDecoder(Decoder):
             sym_name = str(getattr(sym_type, 'name', sym_type)).upper()
             our_type = self.TYPE_MAP.get(sym_name, sym_name)
 
-            # Polygon points -> bounding box
-            points = getattr(sym, 'points', [])
-            bbox = None
-            if points:
-                xs = [p[0] for p in points]
-                ys = [p[1] for p in points]
-                bbox = (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+            # pyzbar exposes the symbol location as `polygon` (a list of
+            # Point namedtuples); there is no `points` attribute.
+            points = [
+                (int(p.x), int(p.y))
+                for p in (getattr(sym, 'polygon', None) or [])
+            ]
+            bbox = self._points_to_bbox(points) or self._rect_to_bbox(sym)
 
             results.append(Detection(
                 type=our_type,
@@ -104,3 +104,20 @@ class ZBarDecoder(Decoder):
             ))
 
         return results
+
+    @staticmethod
+    def _points_to_bbox(points: list) -> tuple | None:
+        """Convert polygon points to a (x, y, w, h) bounding box."""
+        if not points:
+            return None
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        return (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+
+    @staticmethod
+    def _rect_to_bbox(sym) -> tuple | None:
+        """Fall back to pyzbar's Rect when no polygon is available."""
+        rect = getattr(sym, 'rect', None)
+        if rect is None:
+            return None
+        return (rect.left, rect.top, rect.width, rect.height)
