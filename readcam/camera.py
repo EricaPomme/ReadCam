@@ -12,10 +12,11 @@ import sys
 
 import cv2
 
-from .config import OCR_ADAPTIVE_HEADROOM
+from .config import OCR_ADAPTIVE_HEADROOM, RESOLUTION_AUTO
 from .decoders.ocr_decoder import OCRDecoder
 from .decoders.zbar_decoder import ZBarDecoder
 from .decoders.zxing_decoder import ZXingDecoder
+from .image_enhance import ImageEnhancer
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,9 @@ def _camera_backend() -> int:
 # and concurrent probes must not interleave.
 _camera_op_lock = threading.RLock()
 import numpy as np
+
+from .config import DEFAULT_FRAME_INTERVAL, RESOLUTION_AUTO
+from .image_enhance import ImageEnhancer
 
 from .config import DEFAULT_FRAME_INTERVAL
 
@@ -167,6 +171,7 @@ class CaptureThread(threading.Thread):
         auto_holder: Optional[dict] = None,
         camera_index_holder: Optional[dict] = None,
         transform_holder: Optional[dict] = None,
+        filter_holder: Optional[dict] = None,
         debug: bool = False,
     ):
         super().__init__(name="capture", daemon=True)
@@ -195,6 +200,15 @@ class CaptureThread(threading.Thread):
         self.transform_holder = (
             transform_holder if transform_holder is not None
             else {"rotation": 0, "flip": "none"}
+        )
+        # Shared live filter settings: colour mode + image adjustments
+        # applied here, plus the resolution requested from the panel.
+        self.filter_holder = (
+            filter_holder if filter_holder is not None else {}
+        )
+        self._enhancer = ImageEnhancer(self.filter_holder)
+        self._current_resolution: str = self.filter_holder.get(
+            "resolution", RESOLUTION_AUTO,
         )
         self.debug = debug
 
@@ -243,6 +257,7 @@ class CaptureThread(threading.Thread):
                 if self._open_attempts < 3:
                     self._open_attempts += 1
                     if self._open_camera(self.camera_index):
+                        self._apply_resolution(self._current_resolution)
                         self.connected = True
                         self.open_failed = False
                         self.gave_up = False
@@ -269,6 +284,29 @@ class CaptureThread(threading.Thread):
                 time.sleep(0.05)
                 continue
 
+            # Live resolution switching: re-open when the requested
+            # resolution changes. Many CAP_DSHOW cameras only honour
+            # frame-size properties on open, so a re-open is the
+            # reliable way to apply it.
+            desired_resolution = self.filter_holder.get(
+                "resolution", RESOLUTION_AUTO,
+            )
+            if desired_resolution != self._current_resolution:
+                logger.info(
+                    "Resolution switch requested: %s -> %s",
+                    self._current_resolution, desired_resolution,
+                )
+                self._release_camera()
+                self._current_resolution = desired_resolution
+                self._open_attempts = 0
+                self._open_failed_logged = False
+                self.open_failed = False
+                self.gave_up = False
+                self.connected = False
+                self._drain_queue(self.frame_queue)
+                self._drain_queue(self.ocr_queue)
+                continue
+
             try:
                 ret, frame = self._cap.read()
             except Exception:
@@ -291,6 +329,16 @@ class CaptureThread(threading.Thread):
             self._read_failures = 0
 
             frame = self._apply_transform(frame)
+
+            # Keep a copy of the raw frame for the OCR pipeline: the
+            # user's colour-mode / adjustments are display choices and
+            # should not degrade Tesseract quality (OCR does its own
+            # preprocessing). Same dimensions, so ROI boxes stay valid.
+            ocr_frame = frame.copy()
+
+            # Apply colour mode + image adjustments for display and
+            # zbar decoding (1-bit B/W generally helps zbar detection).
+            frame = self._enhancer.apply(frame)
 
             try:
                 # Fast decode: run zbar on the frame (auto mode only)
@@ -325,7 +373,7 @@ class CaptureThread(threading.Thread):
                             adaptive_ms,
                         )
                     try:
-                        self.ocr_queue.put_nowait(frame.copy())
+                        self.ocr_queue.put_nowait(ocr_frame)
                         logger.debug("Pushed frame to OCR queue")
                     except queue.Full:
                         logger.debug("ocr_queue full; dropped OCR frame")
@@ -384,6 +432,37 @@ class CaptureThread(threading.Thread):
                 except Exception:
                     logger.debug("Error releasing camera", exc_info=True)
                 self._cap = None
+
+    def _apply_resolution(self, resolution: str) -> None:
+        """Request the requested frame size from the open camera.
+
+        "Auto" leaves the camera at its default. Applied on every open
+        and whenever the panel resolution changes (via a re-open).
+        """
+        if resolution == RESOLUTION_AUTO or self._cap is None:
+            return
+        try:
+            width, height = (int(v) for v in resolution.split("x", 1))
+        except ValueError:
+            logger.warning("Invalid resolution %r; ignoring", resolution)
+            return
+        with _camera_op_lock:
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        actual = (
+            int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        )
+        if actual != (width, height):
+            logger.warning(
+                "Camera %d rejected %s; reporting %dx%d",
+                self.camera_index, resolution, actual[0], actual[1],
+            )
+        else:
+            logger.info(
+                "Camera %d resolution set to %s",
+                self.camera_index, resolution,
+            )
 
     @staticmethod
     def _drain_queue(q: queue.Queue) -> None:

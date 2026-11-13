@@ -34,6 +34,27 @@ TEXT_MIN_LETTERS = 3            # min alphabetic characters in a result
 OCR_MAX_WIDTH = 1000            # downscale frames wider than this before OCR
 OCR_ADAPTIVE_HEADROOM = 1.25    # adaptive interval = OCR duration x this
 
+# Image adjustments (neutral values)
+IMAGE_CONTRAST = 1.0        # alpha multiplier (1.0 = neutral)
+IMAGE_SATURATION = 1.0      # S-channel multiplier (1.0 = neutral)
+IMAGE_SHARPNESS = 0.0       # unsharp-mask amount (0 = off)
+IMAGE_UNSHARP_SIGMA = 2.0   # Gaussian blur sigma for the unsharp mask
+IMAGE_MEDIAN_BLUR = 0       # 0 = off, else N -> median kernel (2N+1)
+
+# OCR pipeline denoise: edge-preserving bilateral filter applied to the
+# OCR frame only (runs every ~1.5 s, so the heavy cost is free)
+OCR_DENOISE = True
+
+# Colour mode options (display modes applied in the capture thread)
+COLOUR_MODE_COLOUR = "Colour"
+COLOUR_MODE_GREYSCALE = "Greyscale"
+COLOUR_MODE_1BIT = "1-bit B/W"
+COLOUR_MODES = [COLOUR_MODE_COLOUR, COLOUR_MODE_GREYSCALE, COLOUR_MODE_1BIT]
+
+# Resolution options (camera capture size; "Auto" = camera default)
+RESOLUTION_AUTO = "Auto"
+RESOLUTIONS = [RESOLUTION_AUTO, "640x480", "1280x720", "1920x1080"]
+
 # Bounding box colours (BGR for OpenCV)
 COLOUR_QR = (46, 204, 113)          # Green
 COLOUR_BARCODE = (219, 152, 52)     # Blue

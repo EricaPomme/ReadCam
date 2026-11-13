@@ -274,6 +274,7 @@ class ReadCamApp(ctk.CTk):
             ocr_interval_holder=self.ocr_interval_holder,
             auto_holder=self.auto_holder,
             transform_holder=self.transform_holder,
+            filter_holder=self.filter_holder,
             debug=debug,
         )
         self.capture_thread.start()

@@ -7,6 +7,7 @@ import numpy as np
 
 from .base import Detection, Decoder
 from ..config import (
+    OCR_DENOISE,
     OCR_MAX_WIDTH,
     TEXT_MIN_ALNUM_RATIO,
     TEXT_MIN_CONFIDENCE,
@@ -122,6 +123,13 @@ class OCRDecoder(Decoder):
                     gray, (OCR_MAX_WIDTH, int(h * scale)),
                     interpolation=cv2.INTER_AREA,
                 )
+
+            # Optional edge-preserving denoise. The bilateral filter is
+            # expensive, but affordable here because OCR runs every
+            # ~1.5 s rather than per frame; it removes sensor noise
+            # without softening the edges Tesseract relies on.
+            if self._get("ocr_denoise", OCR_DENOISE):
+                gray = cv2.bilateralFilter(gray, 9, 75, 75)
 
             data = pytesseract.image_to_data(
                 gray,
